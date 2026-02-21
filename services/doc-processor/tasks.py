@@ -83,7 +83,7 @@ def _sync_to_destination(
     content: str,
     destination_platform: str,
     destination_config: dict,
-) -> None:
+) -> tuple[bool, str]:
     """Call the doc-sync service via HTTP to publish documentation."""
     settings = get_settings()
     sync_url = settings.doc_sync_url.rstrip("/")
@@ -102,23 +102,34 @@ def _sync_to_destination(
             timeout=120.0,
         )
         if resp.status_code < 300:
+            body = resp.json()
             logger.info(
-                "Synced %s for repo %d to %s (page_id=%s)",
+                "Synced %s for repo %d to %s (page_id=%s, page_url=%s)",
                 doc_type,
                 repo_id,
                 destination_platform,
-                resp.json().get("destination_page_id", "?"),
+                body.get("destination_page_id", "?"),
+                body.get("page_url", "?"),
             )
+            return True, ""
         else:
+            detail = resp.text
+            try:
+                parsed = resp.json()
+                detail = parsed.get("detail", detail)
+            except Exception:
+                pass
             logger.error(
                 "Doc-sync returned %d for %s repo %d: %s",
                 resp.status_code,
                 doc_type,
                 repo_id,
-                resp.text,
+                detail,
             )
+            return False, f"HTTP {resp.status_code}: {detail}"
     except Exception as exc:
         logger.error("Failed to call doc-sync for %s repo %d: %s", doc_type, repo_id, exc)
+        return False, str(exc)
 
 
 # ---------------------------------------------------------------------------
@@ -277,8 +288,9 @@ def process_documentation(self, payload_json: str) -> dict:
         destination_platform = payload.destination_platform.value
         destination_config = payload.destination_config
 
+        sync_failures: list[str] = []
         for doc_type_key, content in generated.items():
-            _sync_to_destination(
+            ok, error_detail = _sync_to_destination(
                 repo_id=payload.repo_id,
                 code_path="/",
                 doc_type=doc_type_key,
@@ -286,6 +298,14 @@ def process_documentation(self, payload_json: str) -> dict:
                 destination_platform=destination_platform,
                 destination_config=destination_config,
             )
+            if not ok:
+                message = f"{doc_type_key}: {error_detail}"
+                sync_failures.append(message)
+                _add_log(session, job.id, "sync_error", message)
+
+        if sync_failures:
+            failed = " | ".join(sync_failures)
+            raise RuntimeError(f"Destination sync failed for doc types: {failed}")
 
         _add_log(
             session,

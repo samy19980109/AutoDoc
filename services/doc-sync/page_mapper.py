@@ -129,9 +129,11 @@ def sync_to_destination(
             if ok:
                 update_mapping(session, mapping.id, mapping.destination_page_id)
                 return mapping.destination_page_id
+            error_detail = provider.get_last_error() or "unknown update error"
             logger.error(
-                "Failed to update existing page %s; will attempt to create new page",
+                "Failed to update existing page %s (%s); will attempt to create new page",
                 mapping.destination_page_id,
+                error_detail,
             )
         else:
             logger.warning(
@@ -147,13 +149,15 @@ def sync_to_destination(
         parent_id=parent_id,
     )
     if not page_id:
+        error_detail = provider.get_last_error() or "unknown create error"
         logger.error(
-            "Failed to create page for repo=%s path='%s' platform=%s",
+            "Failed to create page for repo=%s path='%s' platform=%s: %s",
             repo_id,
             code_path,
             platform,
+            error_detail,
         )
-        return ""
+        raise RuntimeError(error_detail)
 
     update_mapping(session, mapping.id, page_id)
     return page_id

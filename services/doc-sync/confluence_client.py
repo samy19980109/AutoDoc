@@ -25,6 +25,10 @@ class ConfluenceSyncProvider(SyncProvider):
             cloud=True,
         )
         self._base_url = settings.confluence_url
+        self._last_error = ""
+
+    def get_last_error(self) -> str:
+        return self._last_error
 
     def get_page(self, page_id: str) -> dict:
         try:
@@ -32,11 +36,14 @@ class ConfluenceSyncProvider(SyncProvider):
                 page_id,
                 expand="body.storage,version",
             )
+            self._last_error = ""
             return page
         except ApiError as exc:
+            self._last_error = str(exc)
             logger.error("Failed to get page %s: %s", page_id, exc)
             return {}
         except Exception as exc:
+            self._last_error = str(exc)
             logger.error("Unexpected error getting page %s: %s", page_id, exc)
             return {}
 
@@ -49,6 +56,7 @@ class ConfluenceSyncProvider(SyncProvider):
         """
         space_key = config.get("space_key", "")
         if not space_key:
+            self._last_error = "No space_key in config for Confluence page creation"
             logger.error("No space_key in config for Confluence page creation")
             return ""
 
@@ -68,13 +76,16 @@ class ConfluenceSyncProvider(SyncProvider):
                 page_id,
                 space_key,
             )
+            self._last_error = ""
             return page_id
         except ApiError as exc:
+            self._last_error = str(exc)
             logger.error(
                 "Failed to create page '%s' in space %s: %s", title, space_key, exc
             )
             return ""
         except Exception as exc:
+            self._last_error = str(exc)
             logger.error(
                 "Unexpected error creating page '%s' in space %s: %s",
                 title,
@@ -91,12 +102,15 @@ class ConfluenceSyncProvider(SyncProvider):
                 body=content,
                 representation="storage",
             )
+            self._last_error = ""
             logger.info("Updated Confluence page %s ('%s')", page_id, title)
             return True
         except ApiError as exc:
+            self._last_error = str(exc)
             logger.error("Failed to update page %s: %s", page_id, exc)
             return False
         except Exception as exc:
+            self._last_error = str(exc)
             logger.error("Unexpected error updating page %s: %s", page_id, exc)
             return False
 

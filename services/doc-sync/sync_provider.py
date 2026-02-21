@@ -29,6 +29,10 @@ class SyncProvider(ABC):
         """Return the user-facing URL for a page."""
         ...
 
+    def get_last_error(self) -> str:
+        """Return the provider's most recent error message, if any."""
+        return ""
+
 
 def get_sync_provider(platform: str) -> SyncProvider:
     """Factory: return the correct SyncProvider for the given platform name."""

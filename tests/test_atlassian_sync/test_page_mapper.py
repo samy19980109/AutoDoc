@@ -229,7 +229,7 @@ class TestSyncToDestination:
 
     @patch("services_doc_sync.page_mapper.get_sync_provider")
     @patch("services_doc_sync.page_mapper.get_or_create_mapping")
-    def test_returns_empty_string_on_create_failure(
+    def test_raises_runtime_error_on_create_failure(
         self, mock_get_or_create, mock_get_provider, mock_db
     ):
         from services_doc_sync.page_mapper import sync_to_destination
@@ -240,16 +240,16 @@ class TestSyncToDestination:
         provider_instance = MagicMock()
         mock_get_provider.return_value = provider_instance
         provider_instance.create_page.return_value = ""
+        provider_instance.get_last_error.return_value = "Notion auth failed"
 
-        page_id = sync_to_destination(
-            session=mock_db,
-            repo_id=10,
-            code_path="src/fail.py",
-            doc_type=DocType.api_reference,
-            title="Fail",
-            content="<p>X</p>",
-            platform="confluence",
-            config={"space_key": "ENG"},
-        )
-
-        assert page_id == ""
+        with pytest.raises(RuntimeError, match="Notion auth failed"):
+            sync_to_destination(
+                session=mock_db,
+                repo_id=10,
+                code_path="src/fail.py",
+                doc_type=DocType.api_reference,
+                title="Fail",
+                content="<p>X</p>",
+                platform="confluence",
+                config={"space_key": "ENG"},
+            )

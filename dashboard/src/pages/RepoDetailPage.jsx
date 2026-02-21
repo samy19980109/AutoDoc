@@ -27,7 +27,9 @@ export default function RepoDetailPage() {
     destination_platform: "confluence",
   });
   const [spaceKey, setSpaceKey] = useState("");
+  const [notionTargetType, setNotionTargetType] = useState("database");
   const [databaseId, setDatabaseId] = useState("");
+  const [notionPageId, setNotionPageId] = useState("");
 
   useEffect(() => {
     load();
@@ -54,6 +56,8 @@ export default function RepoDetailPage() {
       });
       setSpaceKey(repoData.destination_config?.space_key || "");
       setDatabaseId(repoData.destination_config?.database_id || "");
+      setNotionPageId(repoData.destination_config?.page_id || "");
+      setNotionTargetType(repoData.destination_config?.page_id ? "page" : "database");
     } catch (err) {
       setBanner(`Failed to load repository: ${err.message}`);
     } finally {
@@ -72,7 +76,9 @@ export default function RepoDetailPage() {
         destination_config:
           form.destination_platform === "confluence"
             ? { space_key: spaceKey.trim() }
-            : { database_id: databaseId.trim() },
+            : notionTargetType === "page"
+              ? { page_id: notionPageId.trim() }
+              : { database_id: databaseId.trim() },
       });
       setBanner("Repository settings updated.");
       await load();
@@ -186,16 +192,43 @@ export default function RepoDetailPage() {
               />
             </label>
           ) : (
-            <label>
-              <span className="text-sm soft-text">Notion Database ID</span>
-              <input
-                value={databaseId}
-                onChange={(e) => setDatabaseId(e.target.value)}
-                className="mt-1 w-full rounded-xl border p-2.5"
-                style={{ background: "var(--bg-elevated)", borderColor: "var(--border)" }}
-                placeholder="xxxxxxxxxxxxxxxx"
-              />
-            </label>
+            <>
+              <label>
+                <span className="text-sm soft-text">Notion Target Type</span>
+                <select
+                  value={notionTargetType}
+                  onChange={(e) => setNotionTargetType(e.target.value)}
+                  className="mt-1 w-full rounded-xl border p-2.5"
+                  style={{ background: "var(--bg-elevated)", borderColor: "var(--border)" }}
+                >
+                  <option value="database">Database</option>
+                  <option value="page">Parent Page</option>
+                </select>
+              </label>
+              {notionTargetType === "database" ? (
+                <label>
+                  <span className="text-sm soft-text">Notion Database ID</span>
+                  <input
+                    value={databaseId}
+                    onChange={(e) => setDatabaseId(e.target.value)}
+                    className="mt-1 w-full rounded-xl border p-2.5"
+                    style={{ background: "var(--bg-elevated)", borderColor: "var(--border)" }}
+                    placeholder="xxxxxxxxxxxxxxxx"
+                  />
+                </label>
+              ) : (
+                <label>
+                  <span className="text-sm soft-text">Notion Parent Page ID</span>
+                  <input
+                    value={notionPageId}
+                    onChange={(e) => setNotionPageId(e.target.value)}
+                    className="mt-1 w-full rounded-xl border p-2.5"
+                    style={{ background: "var(--bg-elevated)", borderColor: "var(--border)" }}
+                    placeholder="xxxxxxxxxxxxxxxx"
+                  />
+                </label>
+              )}
+            </>
           )}
 
           <div className="md:col-span-2 flex justify-end">

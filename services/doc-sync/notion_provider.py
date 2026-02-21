@@ -12,10 +12,15 @@ from common.config import get_settings
 from .sync_provider import SyncProvider
 
 logger = logging.getLogger(__name__)
+_MAX_NOTION_CHILDREN = 100
 
 
 def _plain_rich_text(content: str) -> list[dict]:
     return [{"type": "text", "text": {"content": content[:2000]}}]
+
+
+def _chunk_blocks(blocks: list[dict], size: int = _MAX_NOTION_CHILDREN) -> list[list[dict]]:
+    return [blocks[i : i + size] for i in range(0, len(blocks), size)]
 
 
 class _NotionHTMLParser(HTMLParser):
@@ -164,12 +169,18 @@ class NotionSyncProvider(SyncProvider):
     def __init__(self) -> None:
         settings = get_settings()
         self._client = NotionClient(auth=settings.notion_api_key)
+        self._last_error = ""
+
+    def get_last_error(self) -> str:
+        return self._last_error
 
     def get_page(self, page_id: str) -> dict:
         try:
             page = self._client.pages.retrieve(page_id=page_id)
+            self._last_error = ""
             return page
         except Exception as exc:
+            self._last_error = str(exc)
             logger.error("Failed to get Notion page %s: %s", page_id, exc)
             return {}
 
@@ -183,6 +194,14 @@ class NotionSyncProvider(SyncProvider):
         """
         try:
             blocks = _html_to_notion_blocks(content)
+            if not blocks:
+                blocks = [
+                    {
+                        "object": "block",
+                        "type": "paragraph",
+                        "paragraph": {"rich_text": _plain_rich_text("Auto-generated documentation update.")},
+                    }
+                ]
 
             # Determine parent: database, page from config, or explicit parent_id
             parent: dict
@@ -197,28 +216,68 @@ class NotionSyncProvider(SyncProvider):
                     "Notion config must include 'database_id' or 'page_id'"
                 )
 
-            properties: dict = {"title": {"title": [{"text": {"content": title}}]}}
+            # For database parents, the title property key is often "Name"
+            # (or another custom name), not literally "title".
+            title_property_key = "title"
+            if database_id:
+                try:
+                    db = self._client.databases.retrieve(database_id=database_id)
+                    for key, spec in db.get("properties", {}).items():
+                        if spec.get("type") == "title":
+                            title_property_key = key
+                            break
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to inspect Notion database schema for %s: %s. Falling back to 'title'.",
+                        database_id,
+                        exc,
+                    )
+
+            properties: dict = {
+                title_property_key: {"title": [{"text": {"content": title[:2000]}}]}
+            }
 
             result = self._client.pages.create(
                 parent=parent,
                 properties=properties,
-                children=blocks,
+                children=blocks[:_MAX_NOTION_CHILDREN],
             )
 
             page_id = result["id"]
-            logger.info("Created Notion page '%s' (id=%s)", title, page_id)
+
+            # Notion accepts at most 100 children per create/append call.
+            remaining = blocks[_MAX_NOTION_CHILDREN:]
+            if remaining:
+                for chunk in _chunk_blocks(remaining):
+                    self._client.blocks.children.append(block_id=page_id, children=chunk)
+
+            self._last_error = ""
+            logger.info(
+                "Created Notion page '%s' (id=%s, url=%s)",
+                title,
+                page_id,
+                result.get("url", "n/a"),
+            )
             return page_id
 
         except Exception as exc:
+            self._last_error = str(exc)
             logger.error("Failed to create Notion page '%s': %s", title, exc)
             return ""
 
     def update_page(self, page_id: str, title: str, content: str) -> bool:
         try:
+            page = self._client.pages.retrieve(page_id=page_id)
+            title_property_key = "title"
+            for key, value in page.get("properties", {}).items():
+                if value.get("type") == "title":
+                    title_property_key = key
+                    break
+
             # Update title
             self._client.pages.update(
                 page_id=page_id,
-                properties={"title": {"title": [{"text": {"content": title}}]}},
+                properties={title_property_key: {"title": [{"text": {"content": title[:2000]}}]}},
             )
 
             # Delete existing children, then append new blocks.
@@ -232,12 +291,15 @@ class NotionSyncProvider(SyncProvider):
 
             blocks = _html_to_notion_blocks(content)
             if blocks:
-                self._client.blocks.children.append(block_id=page_id, children=blocks)
+                for chunk in _chunk_blocks(blocks):
+                    self._client.blocks.children.append(block_id=page_id, children=chunk)
 
+            self._last_error = ""
             logger.info("Updated Notion page %s ('%s')", page_id, title)
             return True
 
         except Exception as exc:
+            self._last_error = str(exc)
             logger.error("Failed to update Notion page %s: %s", page_id, exc)
             return False
 

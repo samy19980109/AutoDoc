@@ -99,6 +99,7 @@ class TestNotionSyncProvider:
         result = provider.get_page("bad-id")
 
         assert result == {}
+        assert provider.get_last_error()
 
     @patch("services_doc_sync.notion_provider.NotionClient")
     def test_create_page_with_database(self, MockClient, patch_settings):
@@ -106,6 +107,12 @@ class TestNotionSyncProvider:
 
         client = MagicMock()
         MockClient.return_value = client
+        client.databases.retrieve.return_value = {
+            "properties": {
+                "Name": {"type": "title"},
+                "Status": {"type": "select"},
+            }
+        }
         client.pages.create.return_value = {"id": "new-page-456"}
 
         provider = NotionSyncProvider()
@@ -118,7 +125,46 @@ class TestNotionSyncProvider:
         assert page_id == "new-page-456"
         call_kwargs = client.pages.create.call_args[1]
         assert call_kwargs["parent"] == {"database_id": "db-abc"}
-        assert call_kwargs["properties"]["title"]["title"][0]["text"]["content"] == "Test Doc"
+        assert call_kwargs["properties"]["Name"]["title"][0]["text"]["content"] == "Test Doc"
+
+    @patch("services_doc_sync.notion_provider.NotionClient")
+    def test_create_page_with_page_parent_uses_title_property(self, MockClient, patch_settings):
+        from services_doc_sync.notion_provider import NotionSyncProvider
+
+        client = MagicMock()
+        MockClient.return_value = client
+        client.pages.create.return_value = {"id": "new-page-789"}
+
+        provider = NotionSyncProvider()
+        page_id = provider.create_page(
+            config={"page_id": "parent-123"},
+            title="Page Parent",
+            content="<p>Content</p>",
+        )
+
+        assert page_id == "new-page-789"
+        call_kwargs = client.pages.create.call_args[1]
+        assert call_kwargs["parent"] == {"page_id": "parent-123"}
+        assert call_kwargs["properties"]["title"]["title"][0]["text"]["content"] == "Page Parent"
+
+    @patch("services_doc_sync.notion_provider.NotionClient")
+    def test_create_page_with_empty_content_adds_fallback_paragraph(self, MockClient, patch_settings):
+        from services_doc_sync.notion_provider import NotionSyncProvider
+
+        client = MagicMock()
+        MockClient.return_value = client
+        client.pages.create.return_value = {"id": "new-page-111"}
+
+        provider = NotionSyncProvider()
+        page_id = provider.create_page(
+            config={"page_id": "parent-123"},
+            title="Fallback Content",
+            content="   ",
+        )
+
+        assert page_id == "new-page-111"
+        call_kwargs = client.pages.create.call_args[1]
+        assert call_kwargs["children"][0]["type"] == "paragraph"
 
     @patch("services_doc_sync.notion_provider.NotionClient")
     def test_create_page_failure(self, MockClient, patch_settings):
@@ -136,6 +182,7 @@ class TestNotionSyncProvider:
         )
 
         assert page_id == ""
+        assert provider.get_last_error()
 
     @patch("services_doc_sync.notion_provider.NotionClient")
     def test_update_page_success(self, MockClient, patch_settings):
@@ -164,6 +211,7 @@ class TestNotionSyncProvider:
         ok = provider.update_page("page-123", "Title", "<p>X</p>")
 
         assert ok is False
+        assert provider.get_last_error()
 
     @patch("services_doc_sync.notion_provider.NotionClient")
     def test_get_page_url(self, MockClient, patch_settings):

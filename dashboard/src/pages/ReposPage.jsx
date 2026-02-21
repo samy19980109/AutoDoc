@@ -27,11 +27,15 @@ export default function ReposPage() {
   const [showCreate, setShowCreate] = useState(false);
   const [createForm, setCreateForm] = useState(EMPTY_FORM);
   const [spaceKey, setSpaceKey] = useState("");
+  const [notionTargetType, setNotionTargetType] = useState("database");
   const [databaseId, setDatabaseId] = useState("");
+  const [notionPageId, setNotionPageId] = useState("");
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState(null);
   const [editSpaceKey, setEditSpaceKey] = useState("");
+  const [editNotionTargetType, setEditNotionTargetType] = useState("database");
   const [editDatabaseId, setEditDatabaseId] = useState("");
+  const [editNotionPageId, setEditNotionPageId] = useState("");
   const [busyId, setBusyId] = useState(null);
   const [banner, setBanner] = useState("");
 
@@ -59,24 +63,31 @@ export default function ReposPage() {
     }
   }
 
-  function withConfig(form, confluenceValue, notionValue) {
+  function withConfig(form, confluenceValue, notionDbValue, notionPageValue, notionTarget) {
+    const target = notionTarget || "database";
     return {
       ...form,
       destination_config:
         form.destination_platform === "confluence"
           ? { space_key: confluenceValue.trim() }
-          : { database_id: notionValue.trim() },
+          : target === "page"
+            ? { page_id: notionPageValue.trim() }
+            : { database_id: notionDbValue.trim() },
     };
   }
 
   async function createRepo(e) {
     e.preventDefault();
     try {
-      await api.createRepo(withConfig(createForm, spaceKey, databaseId));
+      await api.createRepo(
+        withConfig(createForm, spaceKey, databaseId, notionPageId, notionTargetType)
+      );
       setShowCreate(false);
       setCreateForm(EMPTY_FORM);
       setSpaceKey("");
+      setNotionTargetType("database");
       setDatabaseId("");
+      setNotionPageId("");
       setBanner("Repository added.");
       await loadRepos();
     } catch (err) {
@@ -95,6 +106,8 @@ export default function ReposPage() {
     });
     setEditSpaceKey(repo.destination_config?.space_key || "");
     setEditDatabaseId(repo.destination_config?.database_id || "");
+    setEditNotionPageId(repo.destination_config?.page_id || "");
+    setEditNotionTargetType(repo.destination_config?.page_id ? "page" : "database");
   }
 
   async function saveEdit(e) {
@@ -103,7 +116,16 @@ export default function ReposPage() {
 
     try {
       setBusyId(editingId);
-      await api.updateRepo(editingId, withConfig(editForm, editSpaceKey, editDatabaseId));
+      await api.updateRepo(
+        editingId,
+        withConfig(
+          editForm,
+          editSpaceKey,
+          editDatabaseId,
+          editNotionPageId,
+          editNotionTargetType
+        )
+      );
       setEditingId(null);
       setEditForm(null);
       setBanner("Repository updated.");
@@ -228,16 +250,43 @@ export default function ReposPage() {
                 />
               </label>
             ) : (
-              <label className="block">
-                <span className="text-sm soft-text">Notion Database ID</span>
-                <input
-                  value={databaseId}
-                  onChange={(e) => setDatabaseId(e.target.value)}
-                  className="mt-1 w-full rounded-xl border p-2.5"
-                  style={{ background: "var(--bg-elevated)", borderColor: "var(--border)" }}
-                  placeholder="xxxxxxxxxxxxxxxx"
-                />
-              </label>
+              <>
+                <label className="block">
+                  <span className="text-sm soft-text">Notion Target Type</span>
+                  <select
+                    value={notionTargetType}
+                    onChange={(e) => setNotionTargetType(e.target.value)}
+                    className="mt-1 w-full rounded-xl border p-2.5"
+                    style={{ background: "var(--bg-elevated)", borderColor: "var(--border)" }}
+                  >
+                    <option value="database">Database</option>
+                    <option value="page">Parent Page</option>
+                  </select>
+                </label>
+                {notionTargetType === "database" ? (
+                  <label className="block">
+                    <span className="text-sm soft-text">Notion Database ID</span>
+                    <input
+                      value={databaseId}
+                      onChange={(e) => setDatabaseId(e.target.value)}
+                      className="mt-1 w-full rounded-xl border p-2.5"
+                      style={{ background: "var(--bg-elevated)", borderColor: "var(--border)" }}
+                      placeholder="xxxxxxxxxxxxxxxx"
+                    />
+                  </label>
+                ) : (
+                  <label className="block">
+                    <span className="text-sm soft-text">Notion Parent Page ID</span>
+                    <input
+                      value={notionPageId}
+                      onChange={(e) => setNotionPageId(e.target.value)}
+                      className="mt-1 w-full rounded-xl border p-2.5"
+                      style={{ background: "var(--bg-elevated)", borderColor: "var(--border)" }}
+                      placeholder="xxxxxxxxxxxxxxxx"
+                    />
+                  </label>
+                )}
+              </>
             )}
 
             <div className="md:col-span-2 flex justify-end">
@@ -332,15 +381,41 @@ export default function ReposPage() {
                                 />
                               </label>
                             ) : (
-                              <label>
-                                <span className="text-xs soft-text">Notion Database ID</span>
-                                <input
-                                  value={editDatabaseId}
-                                  onChange={(e) => setEditDatabaseId(e.target.value)}
-                                  className="mt-1 w-full rounded-xl border p-2"
-                                  style={{ background: "var(--bg-elevated)", borderColor: "var(--border)" }}
-                                />
-                              </label>
+                              <>
+                                <label>
+                                  <span className="text-xs soft-text">Notion Target Type</span>
+                                  <select
+                                    value={editNotionTargetType}
+                                    onChange={(e) => setEditNotionTargetType(e.target.value)}
+                                    className="mt-1 w-full rounded-xl border p-2"
+                                    style={{ background: "var(--bg-elevated)", borderColor: "var(--border)" }}
+                                  >
+                                    <option value="database">Database</option>
+                                    <option value="page">Parent Page</option>
+                                  </select>
+                                </label>
+                                {editNotionTargetType === "database" ? (
+                                  <label>
+                                    <span className="text-xs soft-text">Notion Database ID</span>
+                                    <input
+                                      value={editDatabaseId}
+                                      onChange={(e) => setEditDatabaseId(e.target.value)}
+                                      className="mt-1 w-full rounded-xl border p-2"
+                                      style={{ background: "var(--bg-elevated)", borderColor: "var(--border)" }}
+                                    />
+                                  </label>
+                                ) : (
+                                  <label>
+                                    <span className="text-xs soft-text">Notion Parent Page ID</span>
+                                    <input
+                                      value={editNotionPageId}
+                                      onChange={(e) => setEditNotionPageId(e.target.value)}
+                                      className="mt-1 w-full rounded-xl border p-2"
+                                      style={{ background: "var(--bg-elevated)", borderColor: "var(--border)" }}
+                                    />
+                                  </label>
+                                )}
+                              </>
                             )}
                             <div className="md:col-span-2 flex justify-end gap-2">
                               <button type="button" onClick={() => { setEditingId(null); setEditForm(null); }} className="px-3 py-2 rounded-xl text-xs font-semibold" style={{ background: "var(--bg-muted)" }}>Cancel</button>

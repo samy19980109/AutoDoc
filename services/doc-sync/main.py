@@ -141,16 +141,22 @@ def sync_doc(
         code_path=effective_code_path,
     )
 
-    page_id = sync_to_destination(
-        session=session,
-        repo_id=request.repo_id,
-        code_path=effective_code_path,
-        doc_type=request.doc_type,
-        title=title,
-        content=request.content,
-        platform=platform,
-        config=config,
-    )
+    try:
+        page_id = sync_to_destination(
+            session=session,
+            repo_id=request.repo_id,
+            code_path=effective_code_path,
+            doc_type=request.doc_type,
+            title=title,
+            content=request.content,
+            platform=platform,
+            config=config,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to sync page to {platform}: {exc}",
+        ) from exc
 
     if not page_id:
         raise HTTPException(

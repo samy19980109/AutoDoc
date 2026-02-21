@@ -39,14 +39,46 @@ async def _analyze_code_async(
     )
 
     # Parse the JSON response, stripping any accidental markdown fences.
-    raw = response.content.strip()
+    raw = (response.content or "").strip()
     if raw.startswith("```"):
         raw = raw.split("\n", 1)[1]
     if raw.endswith("```"):
         raw = raw.rsplit("```", 1)[0]
     raw = raw.strip()
 
-    analysis: Dict[str, Any] = json.loads(raw)
+    def _default_analysis() -> Dict[str, Any]:
+        return {
+            "summary": "AI returned non-JSON analysis output; using fallback structure.",
+            "functions": [],
+            "classes": [],
+            "api_endpoints": [],
+            "dependencies": [],
+            "architecture_patterns": [],
+        }
+
+    def _extract_json_object(text: str) -> str:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            return text[start : end + 1]
+        return text
+
+    if not raw:
+        logger.error("AI analysis response was empty; using fallback analysis")
+        analysis = _default_analysis()
+    else:
+        try:
+            analysis = json.loads(raw)
+        except json.JSONDecodeError:
+            candidate = _extract_json_object(raw)
+            try:
+                analysis = json.loads(candidate)
+            except json.JSONDecodeError:
+                logger.error(
+                    "Failed to parse AI analysis JSON. Sample output: %r",
+                    raw[:1000],
+                )
+                analysis = _default_analysis()
 
     logger.info(
         "Analysis complete: %d functions, %d classes, %d endpoints",
