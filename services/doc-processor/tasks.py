@@ -278,10 +278,9 @@ def process_documentation(self, payload_json: str) -> dict:
         destination_config = payload.destination_config
 
         for doc_type_key, content in generated.items():
-            code_path = payload.changed_files[0] if payload.changed_files else "/"
             _sync_to_destination(
                 repo_id=payload.repo_id,
-                code_path=code_path,
+                code_path="/",
                 doc_type=doc_type_key,
                 content=content,
                 destination_platform=destination_platform,

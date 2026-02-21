@@ -12,6 +12,8 @@ from .sync_provider import SyncProvider, get_sync_provider
 
 logger = logging.getLogger(__name__)
 
+_REPO_SCOPE_CODE_PATH = "/"
+
 
 def get_or_create_mapping(
     session: Session,
@@ -19,22 +21,41 @@ def get_or_create_mapping(
     code_path: str,
     doc_type: DocType,
 ) -> PageMapping:
-    """Return an existing PageMapping or create a new one."""
-    mapping = (
+    """Return an existing PageMapping or create a new one.
+
+    Mappings are repo-scoped per doc type to keep a single destination page
+    version per repository/doc type.
+    """
+    mappings = (
         session.query(PageMapping)
         .filter(
             PageMapping.repo_id == repo_id,
-            PageMapping.code_path == code_path,
             PageMapping.doc_type == doc_type,
         )
-        .first()
+        .all()
     )
-    if mapping is not None:
+
+    if mappings:
+        # Prefer the canonical repo-level mapping; otherwise reuse the first
+        # mapped page and normalize its key.
+        mapping = next((m for m in mappings if m.code_path == _REPO_SCOPE_CODE_PATH), None)
+        if mapping is None:
+            mapping = next((m for m in mappings if m.destination_page_id), mappings[0])
+            if mapping.code_path != _REPO_SCOPE_CODE_PATH:
+                previous_code_path = mapping.code_path
+                mapping.code_path = _REPO_SCOPE_CODE_PATH
+                session.flush()
+                logger.info(
+                    "Normalized PageMapping id=%s path from '%s' to '%s'",
+                    mapping.id,
+                    previous_code_path,
+                    _REPO_SCOPE_CODE_PATH,
+                )
         return mapping
 
     mapping = PageMapping(
         repo_id=repo_id,
-        code_path=code_path,
+        code_path=_REPO_SCOPE_CODE_PATH,
         doc_type=doc_type,
     )
     session.add(mapping)

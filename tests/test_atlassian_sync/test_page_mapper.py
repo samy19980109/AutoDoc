@@ -42,7 +42,7 @@ class TestGetOrCreateMapping:
         from services_doc_sync.page_mapper import get_or_create_mapping
 
         existing = _make_mapping(id_=5)
-        mock_db.query.return_value.filter.return_value.first.return_value = existing
+        mock_db.query.return_value.filter.return_value.all.return_value = [existing]
 
         result = get_or_create_mapping(
             mock_db, repo_id=10, code_path="src/main.py", doc_type=DocType.api_reference
@@ -54,7 +54,7 @@ class TestGetOrCreateMapping:
     def test_creates_new_mapping_when_none_exists(self, mock_db):
         from services_doc_sync.page_mapper import get_or_create_mapping
 
-        mock_db.query.return_value.filter.return_value.first.return_value = None
+        mock_db.query.return_value.filter.return_value.all.return_value = []
 
         def _flush():
             pass
@@ -70,8 +70,27 @@ class TestGetOrCreateMapping:
         added_obj = mock_db.add.call_args[0][0]
         assert isinstance(added_obj, PageMapping)
         assert added_obj.repo_id == 10
-        assert added_obj.code_path == "src/new.py"
+        assert added_obj.code_path == "/"
         assert added_obj.doc_type == DocType.architecture
+
+    def test_reuses_existing_repo_mapping_with_different_code_path(self, mock_db):
+        from services_doc_sync.page_mapper import get_or_create_mapping
+
+        existing = _make_mapping(
+            id_=9,
+            code_path="src/legacy.py",
+            doc_type=DocType.architecture,
+            destination_page_id="PAGE-9",
+        )
+        mock_db.query.return_value.filter.return_value.all.return_value = [existing]
+
+        result = get_or_create_mapping(
+            mock_db, repo_id=10, code_path="src/new.py", doc_type=DocType.architecture
+        )
+
+        assert result is existing
+        assert existing.code_path == "/"
+        mock_db.add.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

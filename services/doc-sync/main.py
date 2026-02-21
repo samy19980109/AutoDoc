@@ -131,17 +131,20 @@ def sync_doc(
             detail="No destination config provided and none configured on the repository.",
         )
 
+    # Keep one destination page version per repository/doc type.
+    effective_code_path = "/"
+
     title = request.title or _default_doc_title(
         repo=repo,
         repo_id=request.repo_id,
         doc_type=request.doc_type,
-        code_path=request.code_path,
+        code_path=effective_code_path,
     )
 
     page_id = sync_to_destination(
         session=session,
         repo_id=request.repo_id,
-        code_path=request.code_path,
+        code_path=effective_code_path,
         doc_type=request.doc_type,
         title=title,
         content=request.content,
