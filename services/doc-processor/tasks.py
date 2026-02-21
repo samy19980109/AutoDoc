@@ -1,0 +1,256 @@
+"""Celery tasks for the doc-processor service."""
+
+from __future__ import annotations
+
+import json
+import traceback
+from datetime import datetime
+
+try:
+    from celery_app import app
+except ImportError:
+    from services.doc_processor.celery_app import app
+from common.ai import get_ai_provider
+from common.config import get_settings
+from common.models import (
+    DocType,
+    Job,
+    JobPayload,
+    JobStatus,
+    ProcessingLog,
+    Repository,
+    TriggerType,
+)
+from common.models.base import get_session_factory
+from common.utils.logging import setup_logging
+from analyzer import analyze_code
+from generator import generate_docs
+from merger import merge_content
+
+logger = setup_logging("doc-processor.tasks")
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _add_log(session, job_id: int, step: str, message: str) -> None:
+    """Insert a processing log entry."""
+    entry = ProcessingLog(
+        job_id=job_id,
+        step=step,
+        message=message,
+        created_at=datetime.utcnow(),
+    )
+    session.add(entry)
+    session.commit()
+
+
+def _get_ai():
+    """Build an AIProvider from current settings."""
+    settings = get_settings()
+    api_key = (
+        settings.anthropic_api_key
+        if settings.ai_provider == "anthropic"
+        else settings.openai_api_key
+    )
+    return get_ai_provider(
+        provider=settings.ai_provider,
+        api_key=api_key,
+        model=settings.ai_model,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Main task
+# ---------------------------------------------------------------------------
+
+@app.task(
+    name="process_documentation",
+    bind=True,
+    max_retries=2,
+    default_retry_delay=60,
+)
+def process_documentation(self, payload_json: str) -> dict:
+    """Orchestrate the full documentation pipeline for a single job.
+
+    Parameters
+    ----------
+    payload_json:
+        JSON-serialised :class:`JobPayload`.
+
+    Returns
+    -------
+    dict
+        Result summary with generated doc types and section counts.
+    """
+    payload = JobPayload.model_validate_json(payload_json)
+    session_factory = get_session_factory()
+    session = session_factory()
+
+    try:
+        # --- Mark job as processing -----------------------------------
+        job: Job | None = session.get(Job, payload.job_id)
+        if job is None:
+            raise ValueError(f"Job {payload.job_id} not found in database")
+
+        job.status = JobStatus.processing
+        job.started_at = datetime.utcnow()
+        session.commit()
+        _add_log(session, job.id, "start", f"Processing started for {payload.github_url}")
+
+        # --- 1. Gather file contents (placeholder) --------------------
+        # In production this would clone / fetch files from GitHub.
+        # For now we rely on changed_files being populated with paths and
+        # a future GitHub integration filling in the actual content.
+        file_contents: dict[str, str] = {}
+        if payload.changed_files:
+            _add_log(
+                session,
+                job.id,
+                "gather",
+                f"Gathering {len(payload.changed_files)} changed files",
+            )
+            # TODO: integrate with GitHub API to fetch file contents
+            # For now, record intent so the pipeline is end-to-end testable
+            for path in payload.changed_files:
+                file_contents[path] = f"# Placeholder for {path}"
+        else:
+            _add_log(session, job.id, "gather", "No changed files specified; full repo scan required")
+            # TODO: clone repo and list all files
+            file_contents["README.md"] = "# Placeholder -- full repo scan not yet implemented"
+
+        # --- 2. Analyze code ------------------------------------------
+        _add_log(session, job.id, "analyze", "Starting AI code analysis")
+        ai_provider = _get_ai()
+        analysis = analyze_code(file_contents, ai_provider)
+        _add_log(
+            session,
+            job.id,
+            "analyze",
+            f"Analysis complete: {len(analysis.get('functions', []))} functions, "
+            f"{len(analysis.get('classes', []))} classes",
+        )
+
+        # --- 3. Generate docs for each doc type -----------------------
+        generated: dict[str, str] = {}
+        for doc_type in DocType:
+            _add_log(session, job.id, "generate", f"Generating {doc_type.value} documentation")
+            # TODO: fetch existing Confluence content for smart merge
+            existing_content = ""
+            html = generate_docs(analysis, doc_type, existing_content, ai_provider)
+            generated[doc_type.value] = html
+            _add_log(
+                session,
+                job.id,
+                "generate",
+                f"{doc_type.value} generated ({len(html)} chars)",
+            )
+
+        # --- 4. Merge with existing content ---------------------------
+        _add_log(session, job.id, "merge", "Merging generated content with existing pages")
+        # TODO: fetch existing page bodies from Confluence
+        existing_page_html = ""
+        merged = merge_content(existing_page_html, generated)
+        _add_log(
+            session,
+            job.id,
+            "merge",
+            f"Merge complete ({len(merged)} chars, {len(generated)} sections)",
+        )
+
+        # --- 5. Mark job complete -------------------------------------
+        job.status = JobStatus.completed
+        job.completed_at = datetime.utcnow()
+        session.commit()
+        _add_log(session, job.id, "complete", "Documentation pipeline finished successfully")
+
+        logger.info("Job %d completed successfully", job.id)
+        return {
+            "job_id": job.id,
+            "status": "completed",
+            "doc_types": list(generated.keys()),
+            "total_chars": sum(len(v) for v in generated.values()),
+        }
+
+    except Exception as exc:
+        logger.exception("Job %d failed: %s", payload.job_id, exc)
+        # Persist failure state
+        try:
+            job = session.get(Job, payload.job_id)
+            if job is not None:
+                job.status = JobStatus.failed
+                job.completed_at = datetime.utcnow()
+                job.error = f"{exc.__class__.__name__}: {exc}"
+                session.commit()
+            _add_log(
+                session,
+                payload.job_id,
+                "error",
+                traceback.format_exc()[-2000:],
+            )
+        except Exception:
+            logger.exception("Failed to persist error state for job %d", payload.job_id)
+        finally:
+            session.close()
+
+        raise self.retry(exc=exc)
+
+    finally:
+        session.close()
+
+
+# ---------------------------------------------------------------------------
+# Scheduled task
+# ---------------------------------------------------------------------------
+
+@app.task(name="scheduled_sync")
+def scheduled_sync() -> dict:
+    """Periodic task that discovers all repositories and enqueues doc-generation jobs."""
+    logger.info("Scheduled sync started")
+    session_factory = get_session_factory()
+    session = session_factory()
+
+    enqueued: list[int] = []
+    try:
+        repos = session.query(Repository).all()
+        if not repos:
+            logger.info("No repositories registered; nothing to sync")
+            return {"enqueued": 0}
+
+        for repo in repos:
+            # Create a new Job row
+            job = Job(
+                repo_id=repo.id,
+                trigger_type=TriggerType.scheduled,
+                status=JobStatus.pending,
+            )
+            session.add(job)
+            session.commit()
+
+            payload = JobPayload(
+                job_id=job.id,
+                repo_id=repo.id,
+                github_url=repo.github_url,
+                branch=repo.default_branch,
+                changed_files=[],
+                trigger_type=TriggerType.scheduled,
+                confluence_space_key=repo.confluence_space_key,
+            )
+
+            process_documentation.apply_async(
+                args=[payload.model_dump_json()],
+                queue="doc-processing",
+            )
+            enqueued.append(job.id)
+            logger.info("Enqueued job %d for repo %s", job.id, repo.github_url)
+
+        logger.info("Scheduled sync complete: enqueued %d jobs", len(enqueued))
+        return {"enqueued": len(enqueued), "job_ids": enqueued}
+
+    except Exception:
+        logger.exception("Scheduled sync failed")
+        raise
+
+    finally:
+        session.close()

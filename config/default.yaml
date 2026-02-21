@@ -1,0 +1,54 @@
+# Default configuration for Enterprise Auto-Documentation
+# Override via environment variables prefixed with AUTODOC_
+
+# Documentation generation settings
+doc_generation:
+  # Doc types to generate for each repo (api_reference, architecture, walkthrough)
+  default_doc_types:
+    - api_reference
+    - architecture
+    - walkthrough
+
+  # File extensions to analyze
+  analyzable_extensions:
+    - .py
+    - .js
+    - .ts
+    - .jsx
+    - .tsx
+    - .java
+    - .go
+    - .rs
+    - .rb
+
+  # Paths to ignore during analysis
+  ignore_paths:
+    - node_modules/
+    - __pycache__/
+    - .git/
+    - dist/
+    - build/
+    - venv/
+    - .env
+
+  # Max files to process per job
+  max_files_per_job: 100
+
+  # Max file size in bytes (skip larger files)
+  max_file_size: 100000
+
+# Scheduling
+scheduling:
+  # Cron expression for periodic sync (default: daily at 2 AM UTC)
+  cron_hour: 2
+  cron_minute: 0
+
+# Confluence settings
+confluence:
+  # Default parent page title (will be created if it doesn't exist)
+  root_page_title: "Auto-Generated Documentation"
+
+# Retry settings
+retry:
+  max_retries: 3
+  retry_delay_seconds: 60
