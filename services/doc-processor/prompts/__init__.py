@@ -91,8 +91,9 @@ Analysis:
 
 ARCHITECTURE_SYSTEM = (
     "You are a senior architect documenting system design. "
-    "Output well-structured HTML suitable for Confluence.  Use <h2>, <h3>, <ul>, "
-    "<code>, and <pre> tags.  Do not wrap output in markdown fences."
+    "Output visually structured HTML suitable for Confluence/Notion. Use <h2>, <h3>, "
+    "<p>, <ul>, <blockquote>, <hr>, <code>, and <pre> tags. Do not wrap output in "
+    "markdown fences."
 )
 
 ARCHITECTURE_PROMPT = """\
@@ -100,12 +101,20 @@ Using the structured code analysis below, generate an Architecture Overview docu
 in HTML.
 
 Include:
-1. **System Overview** -- high-level purpose and components.
-2. **Architecture Patterns** -- patterns identified (e.g. microservices, event-driven).
-3. **Component Diagram** -- describe the components and their relationships in prose
-   (or an ASCII diagram inside a <pre> tag).
-4. **Dependencies** -- external services and libraries with purpose.
-5. **Data Flow** -- how data moves through the system.
+1. **Executive Snapshot** -- one concise paragraph and a short bullet list of key takeaways.
+2. **System Overview** -- high-level purpose, boundaries, and major components.
+3. **Architecture Patterns** -- patterns identified (e.g. microservices, event-driven), each with rationale.
+4. **Component Diagram** -- relationships in prose plus an ASCII diagram inside a <pre> tag.
+5. **Data Flow** -- step-by-step path of data through major components.
+6. **Dependencies** -- external services and libraries with purpose and impact.
+7. **Quality Attributes** -- scalability, reliability, security, observability implications.
+8. **Risks and Trade-offs** -- concrete risks, constraints, and mitigations.
+
+Formatting requirements:
+- Use <hr> between major sections for readability.
+- Use <blockquote> for "Key Decision" and "Critical Risk" callouts.
+- Prefer compact bullet lists over long paragraphs.
+- Keep language specific and technical; avoid vague claims.
 
 Analysis:
 {analysis_json}

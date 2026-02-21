@@ -1,7 +1,8 @@
 """Notion API client implementing the SyncProvider interface."""
 
 import logging
-import re
+from html import unescape
+from html.parser import HTMLParser
 from typing import Optional
 
 from notion_client import Client as NotionClient
@@ -13,101 +14,148 @@ from .sync_provider import SyncProvider
 logger = logging.getLogger(__name__)
 
 
-def _html_to_notion_blocks(html: str) -> list[dict]:
-    """Convert HTML content to Notion block objects.
+def _plain_rich_text(content: str) -> list[dict]:
+    return [{"type": "text", "text": {"content": content[:2000]}}]
 
-    This is a pragmatic converter that handles the most common HTML elements
-    produced by the doc generator (headings, paragraphs, code blocks, lists).
-    """
-    blocks: list[dict] = []
 
-    # Strip tags and convert to simple text blocks.
-    # For a production system you'd use a proper HTML parser; this handles
-    # the AUTO-DOC output which is relatively structured.
-    lines = re.sub(r"<br\s*/?>", "\n", html)
+class _NotionHTMLParser(HTMLParser):
+    """Minimal HTML parser that maps common documentation tags to Notion blocks."""
 
-    # Convert headings (add newlines to ensure they are on separate lines)
-    lines = re.sub(r"<h1[^>]*>(.*?)</h1>", r"\n### HEADING1: \1\n", lines, flags=re.DOTALL)
-    lines = re.sub(r"<h2[^>]*>(.*?)</h2>", r"\n### HEADING2: \1\n", lines, flags=re.DOTALL)
-    lines = re.sub(r"<h3[^>]*>(.*?)</h3>", r"\n### HEADING3: \1\n", lines, flags=re.DOTALL)
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.blocks: list[dict] = []
+        self._current_text: list[str] = []
+        self._current_block_kind: str = "paragraph"
+        self._list_stack: list[str] = []
+        self._in_pre = False
+        self._in_code = False
 
-    # Convert code blocks
-    code_blocks = re.findall(r"<pre><code[^>]*>(.*?)</code></pre>", lines, flags=re.DOTALL)
-    lines = re.sub(
-        r"<pre><code[^>]*>(.*?)</code></pre>",
-        "### CODEBLOCK",
-        lines,
-        flags=re.DOTALL,
-    )
+    def _push_text_block(self, kind: Optional[str] = None) -> None:
+        text = unescape("".join(self._current_text)).strip()
+        self._current_text = []
+        if not text:
+            return
 
-    # Strip remaining HTML tags
-    lines = re.sub(r"<[^>]+>", "", lines)
-    lines = lines.strip()
-
-    code_block_idx = 0
-    for line in lines.split("\n"):
-        line = line.strip()
-        if not line:
-            continue
-
-        if line == "### CODEBLOCK" and code_block_idx < len(code_blocks):
-            code_text = code_blocks[code_block_idx].strip()
-            code_block_idx += 1
-            blocks.append(
+        block_kind = kind or self._current_block_kind
+        if block_kind == "heading_1":
+            self.blocks.append(
+                {"object": "block", "type": "heading_1", "heading_1": {"rich_text": _plain_rich_text(text)}}
+            )
+        elif block_kind == "heading_2":
+            self.blocks.append(
+                {"object": "block", "type": "heading_2", "heading_2": {"rich_text": _plain_rich_text(text)}}
+            )
+        elif block_kind == "heading_3":
+            self.blocks.append(
+                {"object": "block", "type": "heading_3", "heading_3": {"rich_text": _plain_rich_text(text)}}
+            )
+        elif block_kind == "quote":
+            self.blocks.append(
+                {"object": "block", "type": "quote", "quote": {"rich_text": _plain_rich_text(text)}}
+            )
+        elif block_kind == "code":
+            self.blocks.append(
                 {
                     "object": "block",
                     "type": "code",
                     "code": {
-                        "rich_text": [{"type": "text", "text": {"content": code_text[:2000]}}],
+                        "rich_text": _plain_rich_text(text),
                         "language": "plain text",
                     },
                 }
             )
-        elif line.startswith("### HEADING1: "):
-            text = line.removeprefix("### HEADING1: ")
-            blocks.append(
+        elif block_kind == "bulleted_list_item":
+            self.blocks.append(
                 {
                     "object": "block",
-                    "type": "heading_1",
-                    "heading_1": {
-                        "rich_text": [{"type": "text", "text": {"content": text}}]
-                    },
+                    "type": "bulleted_list_item",
+                    "bulleted_list_item": {"rich_text": _plain_rich_text(text)},
                 }
             )
-        elif line.startswith("### HEADING2: "):
-            text = line.removeprefix("### HEADING2: ")
-            blocks.append(
+        elif block_kind == "numbered_list_item":
+            self.blocks.append(
                 {
                     "object": "block",
-                    "type": "heading_2",
-                    "heading_2": {
-                        "rich_text": [{"type": "text", "text": {"content": text}}]
-                    },
-                }
-            )
-        elif line.startswith("### HEADING3: "):
-            text = line.removeprefix("### HEADING3: ")
-            blocks.append(
-                {
-                    "object": "block",
-                    "type": "heading_3",
-                    "heading_3": {
-                        "rich_text": [{"type": "text", "text": {"content": text}}]
-                    },
+                    "type": "numbered_list_item",
+                    "numbered_list_item": {"rich_text": _plain_rich_text(text)},
                 }
             )
         else:
-            blocks.append(
-                {
-                    "object": "block",
-                    "type": "paragraph",
-                    "paragraph": {
-                        "rich_text": [{"type": "text", "text": {"content": line[:2000]}}]
-                    },
-                }
+            self.blocks.append(
+                {"object": "block", "type": "paragraph", "paragraph": {"rich_text": _plain_rich_text(text)}}
             )
 
-    return blocks
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in {"h1", "h2", "h3", "p", "li", "blockquote", "pre"}:
+            self._push_text_block()
+
+        if tag == "h1":
+            self._current_block_kind = "heading_1"
+        elif tag == "h2":
+            self._current_block_kind = "heading_2"
+        elif tag == "h3":
+            self._current_block_kind = "heading_3"
+        elif tag == "blockquote":
+            self._current_block_kind = "quote"
+        elif tag == "pre":
+            self._current_block_kind = "code"
+            self._in_pre = True
+        elif tag == "code":
+            self._in_code = True
+            if not self._in_pre:
+                self._current_text.append("`")
+        elif tag == "ul":
+            self._list_stack.append("bulleted_list_item")
+        elif tag == "ol":
+            self._list_stack.append("numbered_list_item")
+        elif tag == "li":
+            if self._list_stack:
+                self._current_block_kind = self._list_stack[-1]
+            else:
+                self._current_block_kind = "paragraph"
+        elif tag == "br":
+            self._current_text.append("\n")
+        elif tag == "hr":
+            self._push_text_block()
+            self.blocks.append({"object": "block", "type": "divider", "divider": {}})
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "code":
+            self._in_code = False
+            if not self._in_pre:
+                self._current_text.append("`")
+
+        if tag in {"h1", "h2", "h3", "p", "li", "blockquote", "pre"}:
+            self._push_text_block()
+            self._current_block_kind = "paragraph"
+
+        if tag in {"ul", "ol"} and self._list_stack:
+            self._list_stack.pop()
+
+        if tag == "pre":
+            self._in_pre = False
+
+    def handle_data(self, data: str) -> None:
+        if not data:
+            return
+        self._current_text.append(data)
+
+
+def _html_to_notion_blocks(html: str) -> list[dict]:
+    """Convert HTML content to Notion block objects.
+
+    Handles common documentation HTML (headings, paragraphs, lists, quotes,
+    dividers, and code blocks).
+    """
+    if not html or not html.strip():
+        return []
+
+    parser = _NotionHTMLParser()
+    parser.feed(html)
+    parser.close()
+    parser._push_text_block()
+
+    return parser.blocks
 
 
 class NotionSyncProvider(SyncProvider):

@@ -49,6 +49,23 @@ class TestHtmlToNotionBlocks:
         blocks = _html_to_notion_blocks("")
         assert blocks == []
 
+    def test_converts_lists_quotes_and_dividers(self):
+        from services_doc_sync.notion_provider import _html_to_notion_blocks
+
+        html = (
+            "<ul><li>alpha</li><li>beta</li></ul>"
+            "<ol><li>one</li></ol>"
+            "<blockquote>Key decision</blockquote>"
+            "<hr />"
+        )
+        blocks = _html_to_notion_blocks(html)
+        types = [b["type"] for b in blocks]
+
+        assert "bulleted_list_item" in types
+        assert "numbered_list_item" in types
+        assert "quote" in types
+        assert "divider" in types
+
 
 # ---------------------------------------------------------------------------
 # NotionSyncProvider

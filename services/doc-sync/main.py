@@ -5,6 +5,7 @@ and JIRA ticket linking.
 """
 
 import logging
+from urllib.parse import urlparse
 from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException
@@ -53,6 +54,43 @@ class JiraLinkResponse(BaseModel):
     ticket_key: str
 
 
+def _doc_type_label(doc_type: DocType) -> str:
+    labels = {
+        DocType.architecture: "Architecture Blueprint",
+        DocType.api_reference: "API Reference Guide",
+        DocType.walkthrough: "Developer Walkthrough",
+    }
+    return labels.get(doc_type, doc_type.value.replace("_", " ").title())
+
+
+def _repo_display_name(repo: Optional[Repository], repo_id: int) -> str:
+    if not repo or not repo.github_url:
+        return f"Repo {repo_id}"
+
+    parsed = urlparse(repo.github_url)
+    if parsed.netloc and parsed.path:
+        path = parsed.path.strip("/")
+    else:
+        path = repo.github_url.replace("https://github.com/", "").strip("/")
+    return path.removesuffix(".git") or f"Repo {repo_id}"
+
+
+def _code_scope_label(code_path: str) -> str:
+    if not code_path or code_path == "/":
+        return "Repository Overview"
+    path = code_path.strip("/")
+    return path if path else "Repository Overview"
+
+
+def _default_doc_title(
+    repo: Optional[Repository],
+    repo_id: int,
+    doc_type: DocType,
+    code_path: str,
+) -> str:
+    return f"{_doc_type_label(doc_type)} | {_repo_display_name(repo, repo_id)} | {_code_scope_label(code_path)}"
+
+
 # ======================================================================
 # Health check
 # ======================================================================
@@ -80,10 +118,10 @@ def sync_doc(
     """
     platform = request.destination_platform.value
     config = request.destination_config
+    repo = session.query(Repository).filter(Repository.id == request.repo_id).first()
 
     # If no config provided, try to load from repository
     if not config:
-        repo = session.query(Repository).filter(Repository.id == request.repo_id).first()
         if repo and repo.destination_config:
             config = repo.destination_config
 
@@ -93,7 +131,12 @@ def sync_doc(
             detail="No destination config provided and none configured on the repository.",
         )
 
-    title = request.title or f"{request.doc_type.value}: {request.code_path}"
+    title = request.title or _default_doc_title(
+        repo=repo,
+        repo_id=request.repo_id,
+        doc_type=request.doc_type,
+        code_path=request.code_path,
+    )
 
     page_id = sync_to_destination(
         session=session,
