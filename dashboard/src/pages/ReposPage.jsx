@@ -1,204 +1,373 @@
-import { useState, useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api/client";
 
-const PLATFORM_LABELS = { confluence: "Confluence", notion: "Notion" };
+const EMPTY_FORM = {
+  github_url: "",
+  default_branch: "main",
+  destination_platform: "confluence",
+  destination_config: {},
+  config_json: {},
+};
+
+function formatRepoName(url) {
+  return (url || "").replace("https://github.com/", "").replace(/\.git$/, "");
+}
+
+function destinationBadge(platform) {
+  if (platform === "notion") {
+    return { text: "Notion", style: { background: "rgba(99,102,241,.14)", color: "#4f46e5" } };
+  }
+  return { text: "Confluence", style: { background: "rgba(14,116,144,.14)", color: "#0e7490" } };
+}
 
 export default function ReposPage() {
   const [repos, setRepos] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({
-    github_url: "",
-    default_branch: "main",
-    destination_platform: "confluence",
-    destination_config: {},
-  });
-
-  // Derived config fields
+  const [showCreate, setShowCreate] = useState(false);
+  const [createForm, setCreateForm] = useState(EMPTY_FORM);
   const [spaceKey, setSpaceKey] = useState("");
   const [databaseId, setDatabaseId] = useState("");
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState(null);
+  const [editSpaceKey, setEditSpaceKey] = useState("");
+  const [editDatabaseId, setEditDatabaseId] = useState("");
+  const [busyId, setBusyId] = useState(null);
+  const [banner, setBanner] = useState("");
 
   useEffect(() => {
     loadRepos();
   }, []);
 
+  const stats = useMemo(() => {
+    return {
+      total: repos.length,
+      confluence: repos.filter((r) => r.destination_platform === "confluence").length,
+      notion: repos.filter((r) => r.destination_platform === "notion").length,
+    };
+  }, [repos]);
+
   async function loadRepos() {
+    setLoading(true);
     try {
-      const data = await api.listRepos();
+      const data = await api.listRepos(0, 100);
       setRepos(data);
     } catch (err) {
-      console.error("Failed to load repos:", err);
+      setBanner(`Failed to load repositories: ${err.message}`);
     } finally {
       setLoading(false);
     }
   }
 
-  async function handleCreate(e) {
+  function withConfig(form, confluenceValue, notionValue) {
+    return {
+      ...form,
+      destination_config:
+        form.destination_platform === "confluence"
+          ? { space_key: confluenceValue.trim() }
+          : { database_id: notionValue.trim() },
+    };
+  }
+
+  async function createRepo(e) {
     e.preventDefault();
-    const config =
-      form.destination_platform === "confluence"
-        ? { space_key: spaceKey }
-        : { database_id: databaseId };
-    const payload = { ...form, destination_config: config };
     try {
-      await api.createRepo(payload);
-      setForm({ github_url: "", default_branch: "main", destination_platform: "confluence", destination_config: {} });
+      await api.createRepo(withConfig(createForm, spaceKey, databaseId));
+      setShowCreate(false);
+      setCreateForm(EMPTY_FORM);
       setSpaceKey("");
       setDatabaseId("");
-      setShowForm(false);
-      loadRepos();
+      setBanner("Repository added.");
+      await loadRepos();
     } catch (err) {
-      alert("Failed to create repo: " + err.message);
+      setBanner(`Create failed: ${err.message}`);
     }
   }
 
-  async function handleTrigger(repoId) {
+  function startEdit(repo) {
+    setEditingId(repo.id);
+    setEditForm({
+      github_url: repo.github_url,
+      default_branch: repo.default_branch,
+      destination_platform: repo.destination_platform,
+      destination_config: repo.destination_config || {},
+      config_json: repo.config_json || {},
+    });
+    setEditSpaceKey(repo.destination_config?.space_key || "");
+    setEditDatabaseId(repo.destination_config?.database_id || "");
+  }
+
+  async function saveEdit(e) {
+    e.preventDefault();
+    if (!editingId || !editForm) return;
+
     try {
-      await api.triggerRepo(repoId);
-      alert("Documentation generation triggered!");
+      setBusyId(editingId);
+      await api.updateRepo(editingId, withConfig(editForm, editSpaceKey, editDatabaseId));
+      setEditingId(null);
+      setEditForm(null);
+      setBanner("Repository updated.");
+      await loadRepos();
     } catch (err) {
-      alert("Failed to trigger: " + err.message);
+      setBanner(`Update failed: ${err.message}`);
+    } finally {
+      setBusyId(null);
     }
   }
 
-  if (loading) return <div className="text-center py-12 text-gray-500">Loading...</div>;
+  async function deleteRepo(repo) {
+    const ok = window.confirm(`Delete ${formatRepoName(repo.github_url)} and all linked jobs/mappings?`);
+    if (!ok) return;
+
+    try {
+      setBusyId(repo.id);
+      await api.deleteRepo(repo.id);
+      setBanner("Repository deleted.");
+      await loadRepos();
+    } catch (err) {
+      setBanner(`Delete failed: ${err.message}`);
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function trigger(repoId, triggerType) {
+    try {
+      setBusyId(repoId);
+      await api.triggerRepo(repoId, triggerType);
+      setBanner(`Job queued with trigger '${triggerType}'.`);
+    } catch (err) {
+      setBanner(`Trigger failed: ${err.message}`);
+    } finally {
+      setBusyId(null);
+    }
+  }
 
   return (
-    <div>
-      <div className="flex justify-between items-center mb-6">
-        <h2 className="text-2xl font-bold text-gray-900">Repositories</h2>
-        <button
-          onClick={() => setShowForm(!showForm)}
-          className="bg-indigo-600 text-white px-4 py-2 rounded-md hover:bg-indigo-700 text-sm font-medium"
-        >
-          Add Repository
-        </button>
-      </div>
+    <div className="space-y-6 fade-in">
+      {banner && (
+        <div className="panel p-3 text-sm" style={{ color: "var(--text)" }}>
+          {banner}
+        </div>
+      )}
 
-      {showForm && (
-        <form onSubmit={handleCreate} className="bg-white p-6 rounded-lg shadow mb-6 space-y-4">
+      <section className="grid md:grid-cols-3 gap-4">
+        <div className="panel p-4">
+          <p className="text-xs uppercase soft-text">Total Repositories</p>
+          <p className="text-3xl font-extrabold mt-1">{stats.total}</p>
+        </div>
+        <div className="panel p-4">
+          <p className="text-xs uppercase soft-text">Confluence Destinations</p>
+          <p className="text-3xl font-extrabold mt-1">{stats.confluence}</p>
+        </div>
+        <div className="panel p-4">
+          <p className="text-xs uppercase soft-text">Notion Destinations</p>
+          <p className="text-3xl font-extrabold mt-1">{stats.notion}</p>
+        </div>
+      </section>
+
+      <section className="panel p-4 md:p-6">
+        <div className="flex flex-wrap justify-between gap-3 items-center">
           <div>
-            <label className="block text-sm font-medium text-gray-700">GitHub URL</label>
-            <input
-              type="url"
-              required
-              value={form.github_url}
-              onChange={(e) => setForm({ ...form, github_url: e.target.value })}
-              placeholder="https://github.com/org/repo"
-              className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 border p-2"
-            />
+            <h3 className="text-xl font-bold">Repository Registry</h3>
+            <p className="soft-text text-sm">Full CRUD + trigger controls for every repo.</p>
           </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700">Default Branch</label>
+          <div className="flex gap-2">
+            <button className="px-3 py-2 rounded-xl text-sm font-semibold" style={{ background: "var(--bg-muted)" }} onClick={loadRepos}>Refresh</button>
+            <button className="px-3 py-2 rounded-xl text-sm font-semibold text-white" style={{ background: "var(--accent)" }} onClick={() => setShowCreate((v) => !v)}>
+              {showCreate ? "Close" : "Add Repository"}
+            </button>
+          </div>
+        </div>
+
+        {showCreate && (
+          <form onSubmit={createRepo} className="mt-5 grid md:grid-cols-2 gap-4">
+            <label className="block">
+              <span className="text-sm soft-text">GitHub URL</span>
               <input
-                type="text"
-                value={form.default_branch}
-                onChange={(e) => setForm({ ...form, default_branch: e.target.value })}
-                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 border p-2"
+                type="url"
+                required
+                value={createForm.github_url}
+                onChange={(e) => setCreateForm((v) => ({ ...v, github_url: e.target.value }))}
+                className="mt-1 w-full rounded-xl border p-2.5"
+                style={{ background: "var(--bg-elevated)", borderColor: "var(--border)" }}
+                placeholder="https://github.com/org/repo"
               />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700">Documentation Destination</label>
+            </label>
+            <label className="block">
+              <span className="text-sm soft-text">Default Branch</span>
+              <input
+                value={createForm.default_branch}
+                onChange={(e) => setCreateForm((v) => ({ ...v, default_branch: e.target.value }))}
+                className="mt-1 w-full rounded-xl border p-2.5"
+                style={{ background: "var(--bg-elevated)", borderColor: "var(--border)" }}
+              />
+            </label>
+            <label className="block">
+              <span className="text-sm soft-text">Destination Platform</span>
               <select
-                value={form.destination_platform}
-                onChange={(e) => setForm({ ...form, destination_platform: e.target.value })}
-                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 border p-2"
+                value={createForm.destination_platform}
+                onChange={(e) => setCreateForm((v) => ({ ...v, destination_platform: e.target.value }))}
+                className="mt-1 w-full rounded-xl border p-2.5"
+                style={{ background: "var(--bg-elevated)", borderColor: "var(--border)" }}
               >
                 <option value="confluence">Confluence</option>
                 <option value="notion">Notion</option>
               </select>
-            </div>
-          </div>
+            </label>
 
-          {form.destination_platform === "confluence" && (
-            <div>
-              <label className="block text-sm font-medium text-gray-700">Confluence Space Key</label>
-              <input
-                type="text"
-                value={spaceKey}
-                onChange={(e) => setSpaceKey(e.target.value)}
-                placeholder="DOCS"
-                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 border p-2"
-              />
-            </div>
-          )}
-
-          {form.destination_platform === "notion" && (
-            <div>
-              <label className="block text-sm font-medium text-gray-700">Notion Database ID</label>
-              <input
-                type="text"
-                value={databaseId}
-                onChange={(e) => setDatabaseId(e.target.value)}
-                placeholder="abc123def456..."
-                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 border p-2"
-              />
-            </div>
-          )}
-
-          <div className="flex gap-2">
-            <button type="submit" className="bg-indigo-600 text-white px-4 py-2 rounded-md hover:bg-indigo-700 text-sm">
-              Create
-            </button>
-            <button type="button" onClick={() => setShowForm(false)} className="bg-gray-200 text-gray-700 px-4 py-2 rounded-md text-sm">
-              Cancel
-            </button>
-          </div>
-        </form>
-      )}
-
-      <div className="bg-white shadow rounded-lg overflow-hidden">
-        <table className="min-w-full divide-y divide-gray-200">
-          <thead className="bg-gray-50">
-            <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Repository</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Branch</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Destination</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Created</th>
-              <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="bg-white divide-y divide-gray-200">
-            {repos.map((repo) => (
-              <tr key={repo.id} className="hover:bg-gray-50">
-                <td className="px-6 py-4">
-                  <Link to={`/repos/${repo.id}`} className="text-indigo-600 hover:text-indigo-900 font-medium">
-                    {repo.github_url.replace("https://github.com/", "")}
-                  </Link>
-                </td>
-                <td className="px-6 py-4 text-sm text-gray-500">{repo.default_branch}</td>
-                <td className="px-6 py-4 text-sm text-gray-500">
-                  <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                    repo.destination_platform === "notion"
-                      ? "bg-gray-100 text-gray-800"
-                      : "bg-blue-100 text-blue-800"
-                  }`}>
-                    {PLATFORM_LABELS[repo.destination_platform] || repo.destination_platform}
-                  </span>
-                </td>
-                <td className="px-6 py-4 text-sm text-gray-500">{new Date(repo.created_at).toLocaleDateString()}</td>
-                <td className="px-6 py-4 text-right">
-                  <button
-                    onClick={() => handleTrigger(repo.id)}
-                    className="text-sm text-indigo-600 hover:text-indigo-900 font-medium"
-                  >
-                    Generate Docs
-                  </button>
-                </td>
-              </tr>
-            ))}
-            {repos.length === 0 && (
-              <tr>
-                <td colSpan="5" className="px-6 py-12 text-center text-gray-500">
-                  No repositories configured. Add one to get started.
-                </td>
-              </tr>
+            {createForm.destination_platform === "confluence" ? (
+              <label className="block">
+                <span className="text-sm soft-text">Confluence Space Key</span>
+                <input
+                  value={spaceKey}
+                  onChange={(e) => setSpaceKey(e.target.value)}
+                  className="mt-1 w-full rounded-xl border p-2.5"
+                  style={{ background: "var(--bg-elevated)", borderColor: "var(--border)" }}
+                  placeholder="DOCS"
+                />
+              </label>
+            ) : (
+              <label className="block">
+                <span className="text-sm soft-text">Notion Database ID</span>
+                <input
+                  value={databaseId}
+                  onChange={(e) => setDatabaseId(e.target.value)}
+                  className="mt-1 w-full rounded-xl border p-2.5"
+                  style={{ background: "var(--bg-elevated)", borderColor: "var(--border)" }}
+                  placeholder="xxxxxxxxxxxxxxxx"
+                />
+              </label>
             )}
-          </tbody>
-        </table>
-      </div>
+
+            <div className="md:col-span-2 flex justify-end">
+              <button className="px-4 py-2 rounded-xl text-sm font-semibold text-white" style={{ background: "var(--accent)" }} type="submit">
+                Create Repository
+              </button>
+            </div>
+          </form>
+        )}
+
+        <div className="mt-6 overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left soft-text border-b" style={{ borderColor: "var(--border)" }}>
+                <th className="py-3 pr-3">Repository</th>
+                <th className="py-3 pr-3">Branch</th>
+                <th className="py-3 pr-3">Destination</th>
+                <th className="py-3 pr-3">Created</th>
+                <th className="py-3 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {!loading && repos.map((repo) => {
+                const badge = destinationBadge(repo.destination_platform);
+                const rowBusy = busyId === repo.id;
+                const isEditing = editingId === repo.id;
+                return [
+                    <tr key={`repo-${repo.id}`} className="border-b align-top" style={{ borderColor: "var(--border)" }}>
+                      <td className="py-4 pr-3">
+                        <Link to={`/repos/${repo.id}`} className="font-semibold" style={{ color: "var(--accent)" }}>
+                          {formatRepoName(repo.github_url)}
+                        </Link>
+                        <p className="text-xs soft-text mt-1">#{repo.id}</p>
+                      </td>
+                      <td className="py-4 pr-3">{repo.default_branch}</td>
+                      <td className="py-4 pr-3">
+                        <span className="px-2 py-1 rounded-full text-xs font-semibold" style={badge.style}>{badge.text}</span>
+                      </td>
+                      <td className="py-4 pr-3">{new Date(repo.created_at).toLocaleString()}</td>
+                      <td className="py-4 text-right">
+                        <div className="flex flex-wrap justify-end gap-2">
+                          <button className="px-2.5 py-1.5 rounded-lg text-xs font-semibold" style={{ background: "var(--bg-muted)" }} onClick={() => trigger(repo.id, "manual")} disabled={rowBusy}>Run</button>
+                          <button className="px-2.5 py-1.5 rounded-lg text-xs font-semibold" style={{ background: "var(--bg-muted)" }} onClick={() => trigger(repo.id, "scheduled")} disabled={rowBusy}>Queue</button>
+                          <button className="px-2.5 py-1.5 rounded-lg text-xs font-semibold" style={{ background: "var(--bg-muted)" }} onClick={() => startEdit(repo)} disabled={rowBusy}>Edit</button>
+                          <button className="px-2.5 py-1.5 rounded-lg text-xs font-semibold" style={{ background: "rgba(239,68,68,0.14)", color: "var(--danger)" }} onClick={() => deleteRepo(repo)} disabled={rowBusy}>Delete</button>
+                        </div>
+                      </td>
+                    </tr>,
+                    isEditing && editForm ? (
+                      <tr key={`repo-edit-${repo.id}`} className="border-b" style={{ borderColor: "var(--border)" }}>
+                        <td className="py-4" colSpan={5}>
+                          <form onSubmit={saveEdit} className="panel p-4 mt-1 grid md:grid-cols-2 gap-3">
+                            <label>
+                              <span className="text-xs soft-text">GitHub URL</span>
+                              <input
+                                type="url"
+                                value={editForm.github_url}
+                                onChange={(e) => setEditForm((v) => ({ ...v, github_url: e.target.value }))}
+                                className="mt-1 w-full rounded-xl border p-2"
+                                style={{ background: "var(--bg-elevated)", borderColor: "var(--border)" }}
+                              />
+                            </label>
+                            <label>
+                              <span className="text-xs soft-text">Default Branch</span>
+                              <input
+                                value={editForm.default_branch}
+                                onChange={(e) => setEditForm((v) => ({ ...v, default_branch: e.target.value }))}
+                                className="mt-1 w-full rounded-xl border p-2"
+                                style={{ background: "var(--bg-elevated)", borderColor: "var(--border)" }}
+                              />
+                            </label>
+                            <label>
+                              <span className="text-xs soft-text">Destination Platform</span>
+                              <select
+                                value={editForm.destination_platform}
+                                onChange={(e) => setEditForm((v) => ({ ...v, destination_platform: e.target.value }))}
+                                className="mt-1 w-full rounded-xl border p-2"
+                                style={{ background: "var(--bg-elevated)", borderColor: "var(--border)" }}
+                              >
+                                <option value="confluence">Confluence</option>
+                                <option value="notion">Notion</option>
+                              </select>
+                            </label>
+                            {editForm.destination_platform === "confluence" ? (
+                              <label>
+                                <span className="text-xs soft-text">Confluence Space Key</span>
+                                <input
+                                  value={editSpaceKey}
+                                  onChange={(e) => setEditSpaceKey(e.target.value)}
+                                  className="mt-1 w-full rounded-xl border p-2"
+                                  style={{ background: "var(--bg-elevated)", borderColor: "var(--border)" }}
+                                />
+                              </label>
+                            ) : (
+                              <label>
+                                <span className="text-xs soft-text">Notion Database ID</span>
+                                <input
+                                  value={editDatabaseId}
+                                  onChange={(e) => setEditDatabaseId(e.target.value)}
+                                  className="mt-1 w-full rounded-xl border p-2"
+                                  style={{ background: "var(--bg-elevated)", borderColor: "var(--border)" }}
+                                />
+                              </label>
+                            )}
+                            <div className="md:col-span-2 flex justify-end gap-2">
+                              <button type="button" onClick={() => { setEditingId(null); setEditForm(null); }} className="px-3 py-2 rounded-xl text-xs font-semibold" style={{ background: "var(--bg-muted)" }}>Cancel</button>
+                              <button type="submit" className="px-3 py-2 rounded-xl text-xs font-semibold text-white" style={{ background: "var(--accent)" }}>Save Changes</button>
+                            </div>
+                          </form>
+                        </td>
+                      </tr>
+                    ) : null,
+                  ];
+              })}
+
+              {!loading && repos.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="py-10 text-center soft-text">No repositories configured yet.</td>
+                </tr>
+              )}
+
+              {loading && (
+                <tr>
+                  <td colSpan={5} className="py-10 text-center soft-text">Loading repositories...</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
     </div>
   );
 }

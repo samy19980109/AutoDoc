@@ -1,8 +1,17 @@
-import { useState, useEffect } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { Link, useParams } from "react-router-dom";
 import { api } from "../api/client";
 
-const PLATFORM_LABELS = { confluence: "Confluence", notion: "Notion" };
+const statusStyles = {
+  pending: { background: "rgba(245,158,11,.18)", color: "#b45309" },
+  processing: { background: "rgba(59,130,246,.18)", color: "#2563eb" },
+  completed: { background: "rgba(34,197,94,.18)", color: "#15803d" },
+  failed: { background: "rgba(239,68,68,.18)", color: "#b91c1c" },
+};
+
+function repoName(url) {
+  return (url || "").replace("https://github.com/", "").replace(/\.git$/, "");
+}
 
 export default function RepoDetailPage() {
   const { id } = useParams();
@@ -10,169 +19,262 @@ export default function RepoDetailPage() {
   const [mappings, setMappings] = useState([]);
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [banner, setBanner] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const [form, setForm] = useState({
+    default_branch: "main",
+    destination_platform: "confluence",
+  });
+  const [spaceKey, setSpaceKey] = useState("");
+  const [databaseId, setDatabaseId] = useState("");
 
   useEffect(() => {
-    loadData();
+    load();
   }, [id]);
 
-  async function loadData() {
+  const mappingCount = useMemo(() => mappings.length, [mappings]);
+
+  async function load() {
+    setLoading(true);
     try {
       const [repoData, mappingsData, jobsData] = await Promise.all([
         api.getRepo(id),
-        api.listMappings(id),
-        api.listJobs({ repo_id: id, limit: 10 }),
+        api.listMappings({ repo_id: id, limit: 100 }),
+        api.listJobs({ repo_id: id, limit: 12 }),
       ]);
+
       setRepo(repoData);
       setMappings(mappingsData);
       setJobs(jobsData);
+
+      setForm({
+        default_branch: repoData.default_branch,
+        destination_platform: repoData.destination_platform,
+      });
+      setSpaceKey(repoData.destination_config?.space_key || "");
+      setDatabaseId(repoData.destination_config?.database_id || "");
     } catch (err) {
-      console.error("Failed to load repo:", err);
+      setBanner(`Failed to load repository: ${err.message}`);
     } finally {
       setLoading(false);
     }
   }
 
-  async function handleTrigger() {
+  async function saveChanges(e) {
+    e.preventDefault();
+    if (!repo) return;
+
     try {
-      await api.triggerRepo(id);
-      alert("Documentation generation triggered!");
-      loadData();
+      setSaving(true);
+      await api.updateRepo(repo.id, {
+        ...form,
+        destination_config:
+          form.destination_platform === "confluence"
+            ? { space_key: spaceKey.trim() }
+            : { database_id: databaseId.trim() },
+      });
+      setBanner("Repository settings updated.");
+      await load();
     } catch (err) {
-      alert("Trigger failed: " + err.message);
+      setBanner(`Update failed: ${err.message}`);
+    } finally {
+      setSaving(false);
     }
   }
 
-  if (loading) return <div className="text-center py-12 text-gray-500">Loading...</div>;
-  if (!repo) return <div className="text-center py-12 text-red-500">Repository not found</div>;
+  async function trigger(triggerType) {
+    if (!repo) return;
+    try {
+      await api.triggerRepo(repo.id, triggerType);
+      setBanner(`Job started with '${triggerType}' trigger.`);
+      await load();
+    } catch (err) {
+      setBanner(`Trigger failed: ${err.message}`);
+    }
+  }
 
-  const statusColor = {
-    pending: "bg-yellow-100 text-yellow-800",
-    processing: "bg-blue-100 text-blue-800",
-    completed: "bg-green-100 text-green-800",
-    failed: "bg-red-100 text-red-800",
-  };
+  async function deleteMapping(mappingId) {
+    const ok = window.confirm("Delete this page mapping?");
+    if (!ok) return;
 
-  const platformLabel = PLATFORM_LABELS[repo.destination_platform] || repo.destination_platform;
-  const configSummary =
-    repo.destination_platform === "confluence"
-      ? repo.destination_config?.space_key || "Not set"
-      : repo.destination_config?.database_id
-        ? repo.destination_config.database_id.slice(0, 12) + "..."
-        : "Not set";
+    try {
+      await api.deleteMapping(mappingId);
+      setBanner("Mapping deleted.");
+      await load();
+    } catch (err) {
+      setBanner(`Mapping delete failed: ${err.message}`);
+    }
+  }
+
+  if (loading) return <div className="panel p-8 text-center soft-text">Loading repository...</div>;
+  if (!repo) return <div className="panel p-8 text-center">Repository not found.</div>;
 
   return (
-    <div>
-      <div className="flex justify-between items-center mb-6">
+    <div className="space-y-6 fade-in">
+      {banner && <div className="panel p-3 text-sm">{banner}</div>}
+
+      <div className="flex flex-wrap gap-3 items-center justify-between">
         <div>
-          <Link to="/" className="text-sm text-indigo-600 hover:text-indigo-900">&larr; Back to Repositories</Link>
-          <h2 className="text-2xl font-bold text-gray-900 mt-1">
-            {repo.github_url.replace("https://github.com/", "")}
-          </h2>
+          <Link to="/" className="text-sm font-semibold" style={{ color: "var(--accent)" }}>
+            ← Back to repositories
+          </Link>
+          <h3 className="text-2xl font-extrabold mt-1">{repoName(repo.github_url)}</h3>
+          <p className="soft-text text-sm">Repository ID #{repo.id}</p>
         </div>
-        <button
-          onClick={handleTrigger}
-          className="bg-indigo-600 text-white px-4 py-2 rounded-md hover:bg-indigo-700 text-sm font-medium"
-        >
-          Generate Docs
-        </button>
+        <div className="flex gap-2">
+          <button className="px-3 py-2 rounded-xl text-sm font-semibold" style={{ background: "var(--bg-muted)" }} onClick={() => trigger("manual")}>Run Now</button>
+          <button className="px-3 py-2 rounded-xl text-sm font-semibold" style={{ background: "var(--bg-muted)" }} onClick={() => trigger("scheduled")}>Queue Scheduled</button>
+          <button className="px-3 py-2 rounded-xl text-sm font-semibold" style={{ background: "var(--bg-muted)" }} onClick={() => trigger("webhook")}>Simulate Webhook</button>
+        </div>
       </div>
 
-      <div className="grid grid-cols-4 gap-4 mb-8">
-        <div className="bg-white p-4 rounded-lg shadow">
-          <div className="text-sm text-gray-500">Branch</div>
-          <div className="text-lg font-medium">{repo.default_branch}</div>
+      <section className="grid md:grid-cols-4 gap-4">
+        <div className="panel p-4">
+          <p className="text-xs uppercase soft-text">Branch</p>
+          <p className="text-xl font-bold mt-1">{repo.default_branch}</p>
         </div>
-        <div className="bg-white p-4 rounded-lg shadow">
-          <div className="text-sm text-gray-500">Destination</div>
-          <div className="text-lg font-medium">
-            <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-              repo.destination_platform === "notion"
-                ? "bg-gray-100 text-gray-800"
-                : "bg-blue-100 text-blue-800"
-            }`}>
-              {platformLabel}
-            </span>
+        <div className="panel p-4">
+          <p className="text-xs uppercase soft-text">Destination</p>
+          <p className="text-xl font-bold mt-1 capitalize">{repo.destination_platform}</p>
+        </div>
+        <div className="panel p-4">
+          <p className="text-xs uppercase soft-text">Mappings</p>
+          <p className="text-xl font-bold mt-1">{mappingCount}</p>
+        </div>
+        <div className="panel p-4">
+          <p className="text-xs uppercase soft-text">Recent Jobs</p>
+          <p className="text-xl font-bold mt-1">{jobs.length}</p>
+        </div>
+      </section>
+
+      <section className="panel p-5">
+        <h4 className="text-lg font-bold">Repository Settings</h4>
+        <form onSubmit={saveChanges} className="mt-4 grid md:grid-cols-2 gap-4">
+          <label>
+            <span className="text-sm soft-text">Default Branch</span>
+            <input
+              value={form.default_branch}
+              onChange={(e) => setForm((v) => ({ ...v, default_branch: e.target.value }))}
+              className="mt-1 w-full rounded-xl border p-2.5"
+              style={{ background: "var(--bg-elevated)", borderColor: "var(--border)" }}
+            />
+          </label>
+
+          <label>
+            <span className="text-sm soft-text">Destination Platform</span>
+            <select
+              value={form.destination_platform}
+              onChange={(e) => setForm((v) => ({ ...v, destination_platform: e.target.value }))}
+              className="mt-1 w-full rounded-xl border p-2.5"
+              style={{ background: "var(--bg-elevated)", borderColor: "var(--border)" }}
+            >
+              <option value="confluence">Confluence</option>
+              <option value="notion">Notion</option>
+            </select>
+          </label>
+
+          {form.destination_platform === "confluence" ? (
+            <label>
+              <span className="text-sm soft-text">Confluence Space Key</span>
+              <input
+                value={spaceKey}
+                onChange={(e) => setSpaceKey(e.target.value)}
+                className="mt-1 w-full rounded-xl border p-2.5"
+                style={{ background: "var(--bg-elevated)", borderColor: "var(--border)" }}
+                placeholder="DOCS"
+              />
+            </label>
+          ) : (
+            <label>
+              <span className="text-sm soft-text">Notion Database ID</span>
+              <input
+                value={databaseId}
+                onChange={(e) => setDatabaseId(e.target.value)}
+                className="mt-1 w-full rounded-xl border p-2.5"
+                style={{ background: "var(--bg-elevated)", borderColor: "var(--border)" }}
+                placeholder="xxxxxxxxxxxxxxxx"
+              />
+            </label>
+          )}
+
+          <div className="md:col-span-2 flex justify-end">
+            <button type="submit" disabled={saving} className="px-4 py-2 rounded-xl text-sm font-semibold text-white" style={{ background: "var(--accent)" }}>
+              {saving ? "Saving..." : "Save Settings"}
+            </button>
           </div>
-        </div>
-        <div className="bg-white p-4 rounded-lg shadow">
-          <div className="text-sm text-gray-500">
-            {repo.destination_platform === "confluence" ? "Space Key" : "Database ID"}
-          </div>
-          <div className="text-lg font-medium">{configSummary}</div>
-        </div>
-        <div className="bg-white p-4 rounded-lg shadow">
-          <div className="text-sm text-gray-500">Page Mappings</div>
-          <div className="text-lg font-medium">{mappings.length}</div>
-        </div>
-      </div>
+        </form>
+      </section>
 
-      <h3 className="text-lg font-semibold text-gray-900 mb-3">Recent Jobs</h3>
-      <div className="bg-white shadow rounded-lg overflow-hidden mb-8">
-        <table className="min-w-full divide-y divide-gray-200">
-          <thead className="bg-gray-50">
-            <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">ID</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Trigger</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Started</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-200">
-            {jobs.map((job) => (
-              <tr key={job.id} className="hover:bg-gray-50">
-                <td className="px-6 py-4">
-                  <Link to={`/jobs/${job.id}`} className="text-indigo-600 hover:text-indigo-900">#{job.id}</Link>
-                </td>
-                <td className="px-6 py-4 text-sm text-gray-500">{job.trigger_type}</td>
-                <td className="px-6 py-4">
-                  <span className={`px-2 py-1 rounded-full text-xs font-medium ${statusColor[job.status] || ""}`}>
-                    {job.status}
-                  </span>
-                </td>
-                <td className="px-6 py-4 text-sm text-gray-500">
-                  {job.started_at ? new Date(job.started_at).toLocaleString() : "\u2014"}
-                </td>
+      <section className="panel p-5">
+        <div className="flex items-center justify-between mb-3">
+          <h4 className="text-lg font-bold">Recent Jobs</h4>
+          <Link to={`/jobs?repo_id=${repo.id}`} className="text-sm font-semibold" style={{ color: "var(--accent)" }}>View all jobs</Link>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b soft-text" style={{ borderColor: "var(--border)" }}>
+                <th className="text-left py-2 pr-3">Job</th>
+                <th className="text-left py-2 pr-3">Trigger</th>
+                <th className="text-left py-2 pr-3">Status</th>
+                <th className="text-left py-2">Started</th>
               </tr>
-            ))}
-            {jobs.length === 0 && (
-              <tr>
-                <td colSpan="4" className="px-6 py-8 text-center text-gray-500">No jobs yet</td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {jobs.map((job) => (
+                <tr key={job.id} className="border-b" style={{ borderColor: "var(--border)" }}>
+                  <td className="py-3 pr-3"><Link to={`/jobs/${job.id}`} style={{ color: "var(--accent)" }} className="font-semibold">#{job.id}</Link></td>
+                  <td className="py-3 pr-3 capitalize">{job.trigger_type}</td>
+                  <td className="py-3 pr-3"><span className="px-2 py-1 rounded-full text-xs font-semibold" style={statusStyles[job.status] || {}}>{job.status}</span></td>
+                  <td className="py-3">{job.started_at ? new Date(job.started_at).toLocaleString() : "-"}</td>
+                </tr>
+              ))}
+              {jobs.length === 0 && (
+                <tr><td colSpan={4} className="py-6 text-center soft-text">No jobs yet.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
 
-      <h3 className="text-lg font-semibold text-gray-900 mb-3">Page Mappings</h3>
-      <div className="bg-white shadow rounded-lg overflow-hidden">
-        <table className="min-w-full divide-y divide-gray-200">
-          <thead className="bg-gray-50">
-            <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Code Path</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Doc Type</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Page ID</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Last Synced</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-200">
-            {mappings.map((m) => (
-              <tr key={m.id} className="hover:bg-gray-50">
-                <td className="px-6 py-4 text-sm font-mono">{m.code_path}</td>
-                <td className="px-6 py-4 text-sm text-gray-500">{m.doc_type}</td>
-                <td className="px-6 py-4 text-sm text-gray-500">{m.destination_page_id || "\u2014"}</td>
-                <td className="px-6 py-4 text-sm text-gray-500">
-                  {m.last_synced_at ? new Date(m.last_synced_at).toLocaleString() : "Never"}
-                </td>
+      <section className="panel p-5">
+        <div className="flex items-center justify-between mb-3">
+          <h4 className="text-lg font-bold">Page Mappings</h4>
+          <Link to={`/mappings?repo_id=${repo.id}`} className="text-sm font-semibold" style={{ color: "var(--accent)" }}>Open mappings explorer</Link>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b soft-text" style={{ borderColor: "var(--border)" }}>
+                <th className="text-left py-2 pr-3">Code Path</th>
+                <th className="text-left py-2 pr-3">Doc Type</th>
+                <th className="text-left py-2 pr-3">Destination Page</th>
+                <th className="text-left py-2 pr-3">Last Synced</th>
+                <th className="text-right py-2">Actions</th>
               </tr>
-            ))}
-            {mappings.length === 0 && (
-              <tr>
-                <td colSpan="4" className="px-6 py-8 text-center text-gray-500">No page mappings yet</td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {mappings.map((m) => (
+                <tr key={m.id} className="border-b" style={{ borderColor: "var(--border)" }}>
+                  <td className="py-3 pr-3 font-mono">{m.code_path}</td>
+                  <td className="py-3 pr-3">{m.doc_type}</td>
+                  <td className="py-3 pr-3 font-mono">{m.destination_page_id || "-"}</td>
+                  <td className="py-3 pr-3">{m.last_synced_at ? new Date(m.last_synced_at).toLocaleString() : "Never"}</td>
+                  <td className="py-3 text-right">
+                    <button className="px-2.5 py-1.5 rounded-lg text-xs font-semibold" style={{ background: "rgba(239,68,68,.14)", color: "var(--danger)" }} onClick={() => deleteMapping(m.id)}>
+                      Delete
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {mappings.length === 0 && (
+                <tr><td colSpan={5} className="py-6 text-center soft-text">No mappings yet.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
     </div>
   );
 }
