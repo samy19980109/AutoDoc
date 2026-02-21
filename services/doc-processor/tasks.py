@@ -26,11 +26,23 @@ from common.models import (
 )
 from common.models.base import get_session_factory
 from common.utils.logging import setup_logging
+from github import Github, GithubException
 from analyzer import analyze_code
 from generator import generate_docs
 from merger import merge_content
 
 logger = setup_logging("doc-processor.tasks")
+
+# File extensions worth analyzing
+_ANALYZABLE_EXTENSIONS = {
+    ".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".go", ".rs", ".rb",
+}
+
+# Paths to skip
+_IGNORE_PREFIXES = (
+    "node_modules/", "__pycache__/", ".git/", "dist/", "build/",
+    "venv/", ".venv/", ".env", "vendor/",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +99,7 @@ def _sync_to_destination(
                 "destination_platform": destination_platform,
                 "destination_config": destination_config,
             },
-            timeout=30.0,
+            timeout=120.0,
         )
         if resp.status_code < 300:
             logger.info(
@@ -147,22 +159,79 @@ def process_documentation(self, payload_json: str) -> dict:
         session.commit()
         _add_log(session, job.id, "start", f"Processing started for {payload.github_url}")
 
-        # --- 1. Gather file contents (placeholder) --------------------
+        # --- 1. Gather file contents from GitHub ----------------------
         file_contents: dict[str, str] = {}
+        settings = get_settings()
+        repo_full_name = payload.github_url.replace("https://github.com/", "")
+
+        try:
+            gh = Github(settings.github_token)
+            gh_repo = gh.get_repo(repo_full_name)
+        except Exception as exc:
+            raise RuntimeError(f"Cannot access GitHub repo {repo_full_name}: {exc}")
+
         if payload.changed_files:
+            # Fetch only the changed files
             _add_log(
                 session,
                 job.id,
                 "gather",
-                f"Gathering {len(payload.changed_files)} changed files",
+                f"Fetching {len(payload.changed_files)} changed files from GitHub",
             )
-            # TODO: integrate with GitHub API to fetch file contents
             for path in payload.changed_files:
-                file_contents[path] = f"# Placeholder for {path}"
+                try:
+                    ext = "." + path.rsplit(".", 1)[-1] if "." in path else ""
+                    if ext not in _ANALYZABLE_EXTENSIONS:
+                        continue
+                    content_file = gh_repo.get_contents(path, ref=payload.branch)
+                    if isinstance(content_file, list):
+                        continue
+                    decoded = content_file.decoded_content.decode("utf-8", errors="replace")
+                    file_contents[path] = decoded
+                except Exception as exc:
+                    logger.warning("Could not fetch %s: %s", path, exc)
         else:
-            _add_log(session, job.id, "gather", "No changed files specified; full repo scan required")
-            # TODO: clone repo and list all files
-            file_contents["README.md"] = "# Placeholder -- full repo scan not yet implemented"
+            # Full repo scan — walk the tree
+            _add_log(session, job.id, "gather", "Full repo scan: fetching file tree from GitHub")
+            try:
+                tree = gh_repo.get_git_tree(sha=payload.branch, recursive=True)
+                paths_to_fetch = []
+                for item in tree.tree:
+                    if item.type != "blob":
+                        continue
+                    if any(item.path.startswith(p) for p in _IGNORE_PREFIXES):
+                        continue
+                    ext = "." + item.path.rsplit(".", 1)[-1] if "." in item.path else ""
+                    if ext not in _ANALYZABLE_EXTENSIONS:
+                        continue
+                    if item.size and item.size > 100_000:
+                        continue
+                    paths_to_fetch.append(item.path)
+
+                # Cap at 100 files to avoid very large repos
+                paths_to_fetch = paths_to_fetch[:100]
+                _add_log(
+                    session, job.id, "gather",
+                    f"Found {len(paths_to_fetch)} analyzable files",
+                )
+
+                for path in paths_to_fetch:
+                    try:
+                        content_file = gh_repo.get_contents(path, ref=payload.branch)
+                        if isinstance(content_file, list):
+                            continue
+                        decoded = content_file.decoded_content.decode("utf-8", errors="replace")
+                        file_contents[path] = decoded
+                    except Exception as exc:
+                        logger.warning("Could not fetch %s: %s", path, exc)
+
+            except Exception as exc:
+                raise RuntimeError(f"Failed to fetch repo tree: {exc}")
+
+        _add_log(
+            session, job.id, "gather",
+            f"Fetched {len(file_contents)} files ({sum(len(v) for v in file_contents.values())} chars total)",
+        )
 
         # --- 2. Analyze code ------------------------------------------
         _add_log(session, job.id, "analyze", "Starting AI code analysis")
