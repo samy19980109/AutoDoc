@@ -21,13 +21,19 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     ai_model: str = "claude-sonnet-4-20250514"
 
-    # Atlassian
+    # Atlassian (Confluence)
     confluence_url: str = ""
     confluence_username: str = ""
     confluence_api_token: str = ""
     jira_url: str = ""
     jira_username: str = ""
     jira_api_token: str = ""
+
+    # Notion
+    notion_api_key: str = ""
+
+    # Doc Sync Service
+    doc_sync_url: str = "http://localhost:8002"
 
     # API Gateway
     api_secret_key: str = "change-me-in-production"

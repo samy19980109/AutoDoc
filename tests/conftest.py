@@ -36,6 +36,7 @@ _SERVICE_MAP = {
     "services_github_webhook": _SERVICE_DIR / "github-webhook",
     "services_doc_processor": _SERVICE_DIR / "doc-processor",
     "services_atlassian_sync": _SERVICE_DIR / "atlassian-sync",
+    "services_doc_sync": _SERVICE_DIR / "doc-sync",
     "services_api_gateway": _SERVICE_DIR / "api-gateway",
 }
 
@@ -87,6 +88,8 @@ class _MockSettings:
     jira_url: str = "https://test.atlassian.net"
     jira_username: str = "test@example.com"
     jira_api_token: str = "jira-token"
+    notion_api_key: str = "ntn_test_key"
+    doc_sync_url: str = "http://localhost:8002"
     api_secret_key: str = "test-secret-key"
     api_key_header: str = "X-API-Key"
     api_keys: str = "test-key-1,test-key-2"

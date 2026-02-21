@@ -196,7 +196,8 @@ def create_and_enqueue_job(
         branch=branch,
         changed_files=changed_files,
         trigger_type=trigger_type,
-        confluence_space_key=repository.confluence_space_key,
+        destination_platform=repository.destination_platform or "confluence",
+        destination_config=repository.destination_config or {},
     )
 
     db.commit()

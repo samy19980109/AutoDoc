@@ -1,9 +1,9 @@
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, HttpUrl
+from pydantic import BaseModel
 
-from common.models.tables import DocType, JobStatus, TriggerType
+from common.models.tables import DestinationPlatform, DocType, JobStatus, TriggerType
 
 
 # --- Repository ---
@@ -11,13 +11,15 @@ from common.models.tables import DocType, JobStatus, TriggerType
 class RepositoryCreate(BaseModel):
     github_url: str
     default_branch: str = "main"
-    confluence_space_key: Optional[str] = None
+    destination_platform: DestinationPlatform = DestinationPlatform.confluence
+    destination_config: dict = {}
     config_json: dict = {}
 
 
 class RepositoryUpdate(BaseModel):
     default_branch: Optional[str] = None
-    confluence_space_key: Optional[str] = None
+    destination_platform: Optional[DestinationPlatform] = None
+    destination_config: Optional[dict] = None
     config_json: Optional[dict] = None
 
 
@@ -27,7 +29,8 @@ class RepositoryResponse(BaseModel):
     id: int
     github_url: str
     default_branch: str
-    confluence_space_key: Optional[str]
+    destination_platform: DestinationPlatform
+    destination_config: dict
     config_json: dict
     created_at: datetime
 
@@ -60,7 +63,7 @@ class PageMappingResponse(BaseModel):
     repo_id: int
     code_path: str
     doc_type: DocType
-    confluence_page_id: Optional[str]
+    destination_page_id: Optional[str]
     last_synced_at: Optional[datetime]
 
 
@@ -85,4 +88,22 @@ class JobPayload(BaseModel):
     branch: str
     changed_files: list[str] = []
     trigger_type: TriggerType
-    confluence_space_key: Optional[str] = None
+    destination_platform: DestinationPlatform = DestinationPlatform.confluence
+    destination_config: dict = {}
+
+
+# --- Sync Request/Response (shared between doc-processor and doc-sync) ---
+
+class SyncRequest(BaseModel):
+    repo_id: int
+    code_path: str
+    doc_type: DocType
+    content: str
+    title: Optional[str] = None
+    destination_platform: DestinationPlatform = DestinationPlatform.confluence
+    destination_config: dict = {}
+
+
+class SyncResponse(BaseModel):
+    destination_page_id: str
+    page_url: str

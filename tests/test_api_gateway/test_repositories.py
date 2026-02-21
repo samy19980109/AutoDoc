@@ -6,7 +6,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from common.models.tables import Job, JobStatus, Repository, TriggerType
+from common.models.tables import (
+    DestinationPlatform,
+    Job,
+    JobStatus,
+    Repository,
+    TriggerType,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -18,7 +24,8 @@ def _make_repo(
     id_: int = 1,
     github_url: str = "https://github.com/acme/repo",
     default_branch: str = "main",
-    confluence_space_key: str = "ENG",
+    destination_platform: DestinationPlatform = DestinationPlatform.confluence,
+    destination_config: dict | None = None,
     config_json: dict | None = None,
     created_at: datetime | None = None,
 ) -> MagicMock:
@@ -26,7 +33,8 @@ def _make_repo(
     m.id = id_
     m.github_url = github_url
     m.default_branch = default_branch
-    m.confluence_space_key = confluence_space_key
+    m.destination_platform = destination_platform
+    m.destination_config = destination_config or {"space_key": "ENG"}
     m.config_json = config_json or {}
     m.created_at = created_at or datetime(2025, 1, 1, 12, 0, 0)
     return m
@@ -109,7 +117,7 @@ class TestListRepositories:
 
     def test_list_returns_repos(self, client):
         repo1 = _make_repo(id_=1, github_url="https://github.com/acme/a")
-        repo2 = _make_repo(id_=2, github_url="https://github.com/acme/b")
+        repo2 = _make_repo(id_=2, github_url="https://github.com/acme/b", destination_platform=DestinationPlatform.notion, destination_config={"database_id": "abc"})
         client._mock_db.query.return_value.offset.return_value.limit.return_value.all.return_value = [
             repo1, repo2
         ]
@@ -122,7 +130,6 @@ class TestListRepositories:
         client._mock_db.query.return_value.offset.return_value.limit.return_value.all.return_value = []
         resp = client.get("/api/repos/?skip=10&limit=5")
         assert resp.status_code == 200
-        # Verify offset and limit were called (they're on the mock chain)
         client._mock_db.query.return_value.offset.assert_called_with(10)
         client._mock_db.query.return_value.offset.return_value.limit.assert_called_with(5)
 
@@ -134,7 +141,6 @@ class TestListRepositories:
 
 class TestCreateRepository:
     def test_create_success(self, client):
-        # No existing repo with that URL
         client._mock_db.query.return_value.filter.return_value.first.return_value = None
 
         def _refresh(obj):
@@ -148,11 +154,34 @@ class TestCreateRepository:
             json={
                 "github_url": "https://github.com/acme/new-repo",
                 "default_branch": "main",
+                "destination_platform": "confluence",
+                "destination_config": {"space_key": "DOCS"},
             },
         )
         assert resp.status_code == 201
         client._mock_db.add.assert_called_once()
         client._mock_db.commit.assert_called_once()
+
+    def test_create_with_notion(self, client):
+        client._mock_db.query.return_value.filter.return_value.first.return_value = None
+
+        def _refresh(obj):
+            obj.id = 2
+            obj.created_at = datetime(2025, 6, 1)
+
+        client._mock_db.refresh.side_effect = _refresh
+
+        resp = client.post(
+            "/api/repos/",
+            json={
+                "github_url": "https://github.com/acme/notion-repo",
+                "destination_platform": "notion",
+                "destination_config": {"database_id": "abc123"},
+            },
+        )
+        assert resp.status_code == 201
+        added_obj = client._mock_db.add.call_args[0][0]
+        assert added_obj.destination_platform == DestinationPlatform.notion
 
     def test_create_conflict(self, client):
         existing = _make_repo()
@@ -180,6 +209,7 @@ class TestGetRepository:
         assert resp.status_code == 200
         data = resp.json()
         assert data["github_url"] == "https://github.com/acme/repo"
+        assert data["destination_platform"] == "confluence"
 
     def test_get_not_found(self, client):
         client._mock_db.query.return_value.filter.return_value.first.return_value = None
@@ -207,6 +237,24 @@ class TestUpdateRepository:
         resp = client.put(
             "/api/repos/1",
             json={"default_branch": "develop"},
+        )
+        assert resp.status_code == 200
+
+    def test_update_destination_platform(self, client):
+        repo = _make_repo(id_=1)
+        client._mock_db.query.return_value.filter.return_value.first.return_value = repo
+
+        def _refresh(obj):
+            pass
+
+        client._mock_db.refresh.side_effect = _refresh
+
+        resp = client.put(
+            "/api/repos/1",
+            json={
+                "destination_platform": "notion",
+                "destination_config": {"database_id": "xyz"},
+            },
         )
         assert resp.status_code == 200
 
@@ -247,7 +295,6 @@ class TestDeleteRepository:
 class TestTriggerDocumentation:
     def test_trigger_success(self, client):
         repo = _make_repo(id_=1)
-        # First call to .filter().first() finds the repo
         client._mock_db.query.return_value.filter.return_value.first.return_value = repo
 
         def _refresh(obj):

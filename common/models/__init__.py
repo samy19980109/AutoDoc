@@ -1,5 +1,6 @@
 from common.models.base import Base, get_db, get_engine
 from common.models.tables import (
+    DestinationPlatform,
     DocType,
     Job,
     JobStatus,
@@ -17,10 +18,13 @@ from common.models.schemas import (
     RepositoryCreate,
     RepositoryResponse,
     RepositoryUpdate,
+    SyncRequest,
+    SyncResponse,
 )
 
 __all__ = [
     "Base",
+    "DestinationPlatform",
     "DocType",
     "Job",
     "JobCreate",
@@ -35,6 +39,8 @@ __all__ = [
     "RepositoryCreate",
     "RepositoryResponse",
     "RepositoryUpdate",
+    "SyncRequest",
+    "SyncResponse",
     "TriggerType",
     "get_db",
     "get_engine",

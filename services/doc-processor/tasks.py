@@ -6,6 +6,8 @@ import json
 import traceback
 from datetime import datetime
 
+import httpx
+
 try:
     from celery_app import app
 except ImportError:
@@ -13,6 +15,7 @@ except ImportError:
 from common.ai import get_ai_provider
 from common.config import get_settings
 from common.models import (
+    DestinationPlatform,
     DocType,
     Job,
     JobPayload,
@@ -61,6 +64,51 @@ def _get_ai():
     )
 
 
+def _sync_to_destination(
+    repo_id: int,
+    code_path: str,
+    doc_type: str,
+    content: str,
+    destination_platform: str,
+    destination_config: dict,
+) -> None:
+    """Call the doc-sync service via HTTP to publish documentation."""
+    settings = get_settings()
+    sync_url = settings.doc_sync_url.rstrip("/")
+
+    try:
+        resp = httpx.post(
+            f"{sync_url}/sync",
+            json={
+                "repo_id": repo_id,
+                "code_path": code_path,
+                "doc_type": doc_type,
+                "content": content,
+                "destination_platform": destination_platform,
+                "destination_config": destination_config,
+            },
+            timeout=30.0,
+        )
+        if resp.status_code < 300:
+            logger.info(
+                "Synced %s for repo %d to %s (page_id=%s)",
+                doc_type,
+                repo_id,
+                destination_platform,
+                resp.json().get("destination_page_id", "?"),
+            )
+        else:
+            logger.error(
+                "Doc-sync returned %d for %s repo %d: %s",
+                resp.status_code,
+                doc_type,
+                repo_id,
+                resp.text,
+            )
+    except Exception as exc:
+        logger.error("Failed to call doc-sync for %s repo %d: %s", doc_type, repo_id, exc)
+
+
 # ---------------------------------------------------------------------------
 # Main task
 # ---------------------------------------------------------------------------
@@ -100,9 +148,6 @@ def process_documentation(self, payload_json: str) -> dict:
         _add_log(session, job.id, "start", f"Processing started for {payload.github_url}")
 
         # --- 1. Gather file contents (placeholder) --------------------
-        # In production this would clone / fetch files from GitHub.
-        # For now we rely on changed_files being populated with paths and
-        # a future GitHub integration filling in the actual content.
         file_contents: dict[str, str] = {}
         if payload.changed_files:
             _add_log(
@@ -112,7 +157,6 @@ def process_documentation(self, payload_json: str) -> dict:
                 f"Gathering {len(payload.changed_files)} changed files",
             )
             # TODO: integrate with GitHub API to fetch file contents
-            # For now, record intent so the pipeline is end-to-end testable
             for path in payload.changed_files:
                 file_contents[path] = f"# Placeholder for {path}"
         else:
@@ -136,7 +180,7 @@ def process_documentation(self, payload_json: str) -> dict:
         generated: dict[str, str] = {}
         for doc_type in DocType:
             _add_log(session, job.id, "generate", f"Generating {doc_type.value} documentation")
-            # TODO: fetch existing Confluence content for smart merge
+            # TODO: fetch existing page content for smart merge
             existing_content = ""
             html = generate_docs(analysis, doc_type, existing_content, ai_provider)
             generated[doc_type.value] = html
@@ -149,7 +193,7 @@ def process_documentation(self, payload_json: str) -> dict:
 
         # --- 4. Merge with existing content ---------------------------
         _add_log(session, job.id, "merge", "Merging generated content with existing pages")
-        # TODO: fetch existing page bodies from Confluence
+        # TODO: fetch existing page bodies from destination
         existing_page_html = ""
         merged = merge_content(existing_page_html, generated)
         _add_log(
@@ -159,7 +203,30 @@ def process_documentation(self, payload_json: str) -> dict:
             f"Merge complete ({len(merged)} chars, {len(generated)} sections)",
         )
 
-        # --- 5. Mark job complete -------------------------------------
+        # --- 5. Sync to destination -----------------------------------
+        _add_log(session, job.id, "sync", "Syncing documentation to destination")
+        destination_platform = payload.destination_platform.value
+        destination_config = payload.destination_config
+
+        for doc_type_key, content in generated.items():
+            code_path = payload.changed_files[0] if payload.changed_files else "/"
+            _sync_to_destination(
+                repo_id=payload.repo_id,
+                code_path=code_path,
+                doc_type=doc_type_key,
+                content=content,
+                destination_platform=destination_platform,
+                destination_config=destination_config,
+            )
+
+        _add_log(
+            session,
+            job.id,
+            "sync",
+            f"Sync complete for {len(generated)} doc types to {destination_platform}",
+        )
+
+        # --- 6. Mark job complete -------------------------------------
         job.status = JobStatus.completed
         job.completed_at = datetime.utcnow()
         session.commit()
@@ -175,7 +242,6 @@ def process_documentation(self, payload_json: str) -> dict:
 
     except Exception as exc:
         logger.exception("Job %d failed: %s", payload.job_id, exc)
-        # Persist failure state
         try:
             job = session.get(Job, payload.job_id)
             if job is not None:
@@ -219,7 +285,6 @@ def scheduled_sync() -> dict:
             return {"enqueued": 0}
 
         for repo in repos:
-            # Create a new Job row
             job = Job(
                 repo_id=repo.id,
                 trigger_type=TriggerType.scheduled,
@@ -235,7 +300,8 @@ def scheduled_sync() -> dict:
                 branch=repo.default_branch,
                 changed_files=[],
                 trigger_type=TriggerType.scheduled,
-                confluence_space_key=repo.confluence_space_key,
+                destination_platform=repo.destination_platform,
+                destination_config=repo.destination_config or {},
             )
 
             process_documentation.apply_async(

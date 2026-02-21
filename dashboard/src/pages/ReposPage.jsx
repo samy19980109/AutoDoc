@@ -2,11 +2,22 @@ import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api/client";
 
+const PLATFORM_LABELS = { confluence: "Confluence", notion: "Notion" };
+
 export default function ReposPage() {
   const [repos, setRepos] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ github_url: "", default_branch: "main", confluence_space_key: "" });
+  const [form, setForm] = useState({
+    github_url: "",
+    default_branch: "main",
+    destination_platform: "confluence",
+    destination_config: {},
+  });
+
+  // Derived config fields
+  const [spaceKey, setSpaceKey] = useState("");
+  const [databaseId, setDatabaseId] = useState("");
 
   useEffect(() => {
     loadRepos();
@@ -25,9 +36,16 @@ export default function ReposPage() {
 
   async function handleCreate(e) {
     e.preventDefault();
+    const config =
+      form.destination_platform === "confluence"
+        ? { space_key: spaceKey }
+        : { database_id: databaseId };
+    const payload = { ...form, destination_config: config };
     try {
-      await api.createRepo(form);
-      setForm({ github_url: "", default_branch: "main", confluence_space_key: "" });
+      await api.createRepo(payload);
+      setForm({ github_url: "", default_branch: "main", destination_platform: "confluence", destination_config: {} });
+      setSpaceKey("");
+      setDatabaseId("");
       setShowForm(false);
       loadRepos();
     } catch (err) {
@@ -82,16 +100,44 @@ export default function ReposPage() {
               />
             </div>
             <div>
+              <label className="block text-sm font-medium text-gray-700">Documentation Destination</label>
+              <select
+                value={form.destination_platform}
+                onChange={(e) => setForm({ ...form, destination_platform: e.target.value })}
+                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 border p-2"
+              >
+                <option value="confluence">Confluence</option>
+                <option value="notion">Notion</option>
+              </select>
+            </div>
+          </div>
+
+          {form.destination_platform === "confluence" && (
+            <div>
               <label className="block text-sm font-medium text-gray-700">Confluence Space Key</label>
               <input
                 type="text"
-                value={form.confluence_space_key}
-                onChange={(e) => setForm({ ...form, confluence_space_key: e.target.value })}
+                value={spaceKey}
+                onChange={(e) => setSpaceKey(e.target.value)}
                 placeholder="DOCS"
                 className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 border p-2"
               />
             </div>
-          </div>
+          )}
+
+          {form.destination_platform === "notion" && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700">Notion Database ID</label>
+              <input
+                type="text"
+                value={databaseId}
+                onChange={(e) => setDatabaseId(e.target.value)}
+                placeholder="abc123def456..."
+                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 border p-2"
+              />
+            </div>
+          )}
+
           <div className="flex gap-2">
             <button type="submit" className="bg-indigo-600 text-white px-4 py-2 rounded-md hover:bg-indigo-700 text-sm">
               Create
@@ -109,7 +155,7 @@ export default function ReposPage() {
             <tr>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Repository</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Branch</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Space</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Destination</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Created</th>
               <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Actions</th>
             </tr>
@@ -123,7 +169,15 @@ export default function ReposPage() {
                   </Link>
                 </td>
                 <td className="px-6 py-4 text-sm text-gray-500">{repo.default_branch}</td>
-                <td className="px-6 py-4 text-sm text-gray-500">{repo.confluence_space_key || "—"}</td>
+                <td className="px-6 py-4 text-sm text-gray-500">
+                  <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                    repo.destination_platform === "notion"
+                      ? "bg-gray-100 text-gray-800"
+                      : "bg-blue-100 text-blue-800"
+                  }`}>
+                    {PLATFORM_LABELS[repo.destination_platform] || repo.destination_platform}
+                  </span>
+                </td>
                 <td className="px-6 py-4 text-sm text-gray-500">{new Date(repo.created_at).toLocaleDateString()}</td>
                 <td className="px-6 py-4 text-right">
                   <button

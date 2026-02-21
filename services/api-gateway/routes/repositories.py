@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from common.config import get_settings
 from common.models import (
+    DestinationPlatform,
     Job,
     JobCreate,
     JobPayload,
@@ -56,7 +57,8 @@ def create_repository(
     repo = Repository(
         github_url=body.github_url,
         default_branch=body.default_branch,
-        confluence_space_key=body.confluence_space_key,
+        destination_platform=body.destination_platform,
+        destination_config=body.destination_config,
         config_json=body.config_json,
     )
     db.add(repo)
@@ -121,10 +123,7 @@ def trigger_documentation(
     db: Session = Depends(get_db),
     _identity: str = Depends(verify_api_key),
 ):
-    """Trigger documentation generation for a repository.
-
-    Creates a new Job in 'pending' state and enqueues a Celery task.
-    """
+    """Trigger documentation generation for a repository."""
     repo = db.query(Repository).filter(Repository.id == repo_id).first()
     if not repo:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Repository not found")
@@ -140,7 +139,8 @@ def trigger_documentation(
         github_url=repo.github_url,
         branch=repo.default_branch,
         trigger_type=trigger_type,
-        confluence_space_key=repo.confluence_space_key,
+        destination_platform=repo.destination_platform,
+        destination_config=repo.destination_config or {},
     )
 
     celery_app.send_task("process_documentation", args=[payload.model_dump_json()])

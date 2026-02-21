@@ -200,7 +200,8 @@ class TestCreateAndEnqueueJob:
         # Simulate existing repository
         fake_repo = MagicMock()
         fake_repo.id = 1
-        fake_repo.confluence_space_key = "ENG"
+        fake_repo.destination_platform = "confluence"
+        fake_repo.destination_config = {"space_key": "ENG"}
         mock_db.query.return_value.filter.return_value.first.return_value = fake_repo
 
         def _set_id(obj):
@@ -264,7 +265,8 @@ class TestCreateAndEnqueueJob:
 
         fake_repo = MagicMock()
         fake_repo.id = 5
-        fake_repo.confluence_space_key = "DOC"
+        fake_repo.destination_platform = "confluence"
+        fake_repo.destination_config = {"space_key": "DOC"}
         mock_db.query.return_value.filter.return_value.first.return_value = fake_repo
 
         def _set_id(obj):

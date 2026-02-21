@@ -71,22 +71,24 @@ services:
       AUTODOC_REDIS_URL: redis://redis:6379/0
       AUTODOC_CELERY_BROKER_URL: redis://redis:6379/0
       AUTODOC_CELERY_RESULT_BACKEND: redis://redis:6379/1
+      AUTODOC_DOC_SYNC_URL: http://doc-sync:8002
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
 
-  atlassian-sync:
+  doc-sync:
     build:
       context: .
-      dockerfile: services/atlassian-sync/Dockerfile
+      dockerfile: services/doc-sync/Dockerfile
     ports:
       - "8002:8002"
     env_file: .env
     environment:
       AUTODOC_DATABASE_URL: postgresql://autodoc:autodoc@postgres:5432/autodoc
       AUTODOC_REDIS_URL: redis://redis:6379/0
+      AUTODOC_NOTION_API_KEY: ${AUTODOC_NOTION_API_KEY:-}
     depends_on:
       postgres:
         condition: service_healthy

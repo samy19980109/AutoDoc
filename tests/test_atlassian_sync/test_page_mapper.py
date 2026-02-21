@@ -1,4 +1,4 @@
-"""Tests for services/atlassian-sync/page_mapper.py"""
+"""Tests for services/doc-sync/page_mapper.py (generalized sync)"""
 
 from datetime import datetime
 from unittest.mock import MagicMock, patch
@@ -18,7 +18,7 @@ def _make_mapping(
     repo_id: int = 10,
     code_path: str = "src/main.py",
     doc_type: DocType = DocType.api_reference,
-    confluence_page_id: str | None = None,
+    destination_page_id: str | None = None,
     last_synced_at: datetime | None = None,
 ) -> MagicMock:
     """Create a MagicMock that looks like a PageMapping row."""
@@ -27,7 +27,7 @@ def _make_mapping(
     m.repo_id = repo_id
     m.code_path = code_path
     m.doc_type = doc_type
-    m.confluence_page_id = confluence_page_id
+    m.destination_page_id = destination_page_id
     m.last_synced_at = last_synced_at
     return m
 
@@ -39,7 +39,7 @@ def _make_mapping(
 
 class TestGetOrCreateMapping:
     def test_returns_existing_mapping(self, mock_db):
-        from services_atlassian_sync.page_mapper import get_or_create_mapping
+        from services_doc_sync.page_mapper import get_or_create_mapping
 
         existing = _make_mapping(id_=5)
         mock_db.query.return_value.filter.return_value.first.return_value = existing
@@ -49,15 +49,13 @@ class TestGetOrCreateMapping:
         )
 
         assert result is existing
-        # Should NOT call session.add since the mapping already exists
         mock_db.add.assert_not_called()
 
     def test_creates_new_mapping_when_none_exists(self, mock_db):
-        from services_atlassian_sync.page_mapper import get_or_create_mapping
+        from services_doc_sync.page_mapper import get_or_create_mapping
 
         mock_db.query.return_value.filter.return_value.first.return_value = None
 
-        # Simulate flush populating the id
         def _flush():
             pass
 
@@ -69,7 +67,6 @@ class TestGetOrCreateMapping:
 
         mock_db.add.assert_called_once()
         mock_db.flush.assert_called_once()
-        # The returned object should be a PageMapping instance
         added_obj = mock_db.add.call_args[0][0]
         assert isinstance(added_obj, PageMapping)
         assert added_obj.repo_id == 10
@@ -84,155 +81,156 @@ class TestGetOrCreateMapping:
 
 class TestUpdateMapping:
     def test_updates_existing_mapping(self, mock_db):
-        from services_atlassian_sync.page_mapper import update_mapping
+        from services_doc_sync.page_mapper import update_mapping
 
-        existing = _make_mapping(id_=7, confluence_page_id=None)
+        existing = _make_mapping(id_=7, destination_page_id=None)
         mock_db.query.return_value.filter.return_value.first.return_value = existing
 
-        result = update_mapping(mock_db, mapping_id=7, confluence_page_id="12345")
+        result = update_mapping(mock_db, mapping_id=7, destination_page_id="12345")
 
         assert result is existing
-        assert existing.confluence_page_id == "12345"
+        assert existing.destination_page_id == "12345"
         assert existing.last_synced_at is not None
         mock_db.flush.assert_called_once()
 
     def test_returns_none_when_not_found(self, mock_db):
-        from services_atlassian_sync.page_mapper import update_mapping
+        from services_doc_sync.page_mapper import update_mapping
 
         mock_db.query.return_value.filter.return_value.first.return_value = None
 
-        result = update_mapping(mock_db, mapping_id=999, confluence_page_id="12345")
+        result = update_mapping(mock_db, mapping_id=999, destination_page_id="12345")
         assert result is None
 
 
 # ---------------------------------------------------------------------------
-# sync_to_confluence
+# sync_to_destination
 # ---------------------------------------------------------------------------
 
 
-class TestSyncToConfluence:
-    """Tests for the full sync_to_confluence flow."""
+class TestSyncToDestination:
+    """Tests for the full sync_to_destination flow."""
 
-    @patch("services_atlassian_sync.page_mapper.ConfluenceClient")
-    @patch("services_atlassian_sync.page_mapper.get_or_create_mapping")
-    @patch("services_atlassian_sync.page_mapper.update_mapping")
+    @patch("services_doc_sync.page_mapper.get_sync_provider")
+    @patch("services_doc_sync.page_mapper.get_or_create_mapping")
+    @patch("services_doc_sync.page_mapper.update_mapping")
     def test_creates_new_page_when_no_existing(
-        self, mock_update, mock_get_or_create, MockConfluence, mock_db
+        self, mock_update, mock_get_or_create, mock_get_provider, mock_db
     ):
-        from services_atlassian_sync.page_mapper import sync_to_confluence
+        from services_doc_sync.page_mapper import sync_to_destination
 
-        # Mapping with no confluence_page_id yet
-        mapping = _make_mapping(id_=1, confluence_page_id=None)
+        mapping = _make_mapping(id_=1, destination_page_id=None)
         mock_get_or_create.return_value = mapping
 
-        # Confluence client mock
-        confluence_instance = MagicMock()
-        MockConfluence.return_value = confluence_instance
-        confluence_instance.create_page.return_value = "NEW-PAGE-123"
+        provider_instance = MagicMock()
+        mock_get_provider.return_value = provider_instance
+        provider_instance.create_page.return_value = "NEW-PAGE-123"
 
-        page_id = sync_to_confluence(
+        page_id = sync_to_destination(
             session=mock_db,
             repo_id=10,
             code_path="src/main.py",
             doc_type=DocType.api_reference,
             title="API Reference",
             content="<p>Docs</p>",
-            space_key="ENG",
+            platform="confluence",
+            config={"space_key": "ENG"},
         )
 
         assert page_id == "NEW-PAGE-123"
-        confluence_instance.create_page.assert_called_once_with(
-            space_key="ENG",
+        provider_instance.create_page.assert_called_once_with(
+            config={"space_key": "ENG"},
             title="API Reference",
-            body="<p>Docs</p>",
+            content="<p>Docs</p>",
             parent_id=None,
         )
         mock_update.assert_called_once_with(mock_db, 1, "NEW-PAGE-123")
 
-    @patch("services_atlassian_sync.page_mapper.ConfluenceClient")
-    @patch("services_atlassian_sync.page_mapper.get_or_create_mapping")
-    @patch("services_atlassian_sync.page_mapper.update_mapping")
+    @patch("services_doc_sync.page_mapper.get_sync_provider")
+    @patch("services_doc_sync.page_mapper.get_or_create_mapping")
+    @patch("services_doc_sync.page_mapper.update_mapping")
     def test_updates_existing_page(
-        self, mock_update, mock_get_or_create, MockConfluence, mock_db
+        self, mock_update, mock_get_or_create, mock_get_provider, mock_db
     ):
-        from services_atlassian_sync.page_mapper import sync_to_confluence
+        from services_doc_sync.page_mapper import sync_to_destination
 
-        mapping = _make_mapping(id_=2, confluence_page_id="EXISTING-456")
+        mapping = _make_mapping(id_=2, destination_page_id="EXISTING-456")
         mock_get_or_create.return_value = mapping
 
-        confluence_instance = MagicMock()
-        MockConfluence.return_value = confluence_instance
-        confluence_instance.get_page.return_value = {"id": "EXISTING-456", "title": "Old"}
-        confluence_instance.update_page.return_value = True
+        provider_instance = MagicMock()
+        mock_get_provider.return_value = provider_instance
+        provider_instance.get_page.return_value = {"id": "EXISTING-456"}
+        provider_instance.update_page.return_value = True
 
-        page_id = sync_to_confluence(
+        page_id = sync_to_destination(
             session=mock_db,
             repo_id=10,
             code_path="src/main.py",
             doc_type=DocType.api_reference,
             title="API Reference v2",
             content="<p>Updated</p>",
-            space_key="ENG",
+            platform="confluence",
+            config={"space_key": "ENG"},
         )
 
         assert page_id == "EXISTING-456"
-        confluence_instance.update_page.assert_called_once_with(
+        provider_instance.update_page.assert_called_once_with(
             "EXISTING-456", "API Reference v2", "<p>Updated</p>"
         )
 
-    @patch("services_atlassian_sync.page_mapper.ConfluenceClient")
-    @patch("services_atlassian_sync.page_mapper.get_or_create_mapping")
-    @patch("services_atlassian_sync.page_mapper.update_mapping")
+    @patch("services_doc_sync.page_mapper.get_sync_provider")
+    @patch("services_doc_sync.page_mapper.get_or_create_mapping")
+    @patch("services_doc_sync.page_mapper.update_mapping")
     def test_creates_page_when_mapped_page_deleted(
-        self, mock_update, mock_get_or_create, MockConfluence, mock_db
+        self, mock_update, mock_get_or_create, mock_get_provider, mock_db
     ):
-        """If the Confluence page was deleted externally, create a new one."""
-        from services_atlassian_sync.page_mapper import sync_to_confluence
+        """If the destination page was deleted externally, create a new one."""
+        from services_doc_sync.page_mapper import sync_to_destination
 
-        mapping = _make_mapping(id_=3, confluence_page_id="GONE-789")
+        mapping = _make_mapping(id_=3, destination_page_id="GONE-789")
         mock_get_or_create.return_value = mapping
 
-        confluence_instance = MagicMock()
-        MockConfluence.return_value = confluence_instance
-        # get_page returns empty dict -> page no longer exists
-        confluence_instance.get_page.return_value = {}
-        confluence_instance.create_page.return_value = "RECREATED-001"
+        provider_instance = MagicMock()
+        mock_get_provider.return_value = provider_instance
+        provider_instance.get_page.return_value = {}
+        provider_instance.create_page.return_value = "RECREATED-001"
 
-        page_id = sync_to_confluence(
+        page_id = sync_to_destination(
             session=mock_db,
             repo_id=10,
             code_path="src/gone.py",
             doc_type=DocType.walkthrough,
             title="Walkthrough",
             content="<p>Walk</p>",
-            space_key="ENG",
+            platform="notion",
+            config={"database_id": "abc123"},
         )
 
         assert page_id == "RECREATED-001"
-        confluence_instance.create_page.assert_called_once()
+        provider_instance.create_page.assert_called_once()
 
-    @patch("services_atlassian_sync.page_mapper.ConfluenceClient")
-    @patch("services_atlassian_sync.page_mapper.get_or_create_mapping")
+    @patch("services_doc_sync.page_mapper.get_sync_provider")
+    @patch("services_doc_sync.page_mapper.get_or_create_mapping")
     def test_returns_empty_string_on_create_failure(
-        self, mock_get_or_create, MockConfluence, mock_db
+        self, mock_get_or_create, mock_get_provider, mock_db
     ):
-        from services_atlassian_sync.page_mapper import sync_to_confluence
+        from services_doc_sync.page_mapper import sync_to_destination
 
-        mapping = _make_mapping(id_=4, confluence_page_id=None)
+        mapping = _make_mapping(id_=4, destination_page_id=None)
         mock_get_or_create.return_value = mapping
 
-        confluence_instance = MagicMock()
-        MockConfluence.return_value = confluence_instance
-        confluence_instance.create_page.return_value = ""
+        provider_instance = MagicMock()
+        mock_get_provider.return_value = provider_instance
+        provider_instance.create_page.return_value = ""
 
-        page_id = sync_to_confluence(
+        page_id = sync_to_destination(
             session=mock_db,
             repo_id=10,
             code_path="src/fail.py",
             doc_type=DocType.api_reference,
             title="Fail",
             content="<p>X</p>",
-            space_key="ENG",
+            platform="confluence",
+            config={"space_key": "ENG"},
         )
 
         assert page_id == ""

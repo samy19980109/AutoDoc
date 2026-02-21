@@ -2,6 +2,8 @@ import { useState, useEffect } from "react";
 import { useParams, Link } from "react-router-dom";
 import { api } from "../api/client";
 
+const PLATFORM_LABELS = { confluence: "Confluence", notion: "Notion" };
+
 export default function RepoDetailPage() {
   const { id } = useParams();
   const [repo, setRepo] = useState(null);
@@ -50,6 +52,14 @@ export default function RepoDetailPage() {
     failed: "bg-red-100 text-red-800",
   };
 
+  const platformLabel = PLATFORM_LABELS[repo.destination_platform] || repo.destination_platform;
+  const configSummary =
+    repo.destination_platform === "confluence"
+      ? repo.destination_config?.space_key || "Not set"
+      : repo.destination_config?.database_id
+        ? repo.destination_config.database_id.slice(0, 12) + "..."
+        : "Not set";
+
   return (
     <div>
       <div className="flex justify-between items-center mb-6">
@@ -67,14 +77,28 @@ export default function RepoDetailPage() {
         </button>
       </div>
 
-      <div className="grid grid-cols-3 gap-4 mb-8">
+      <div className="grid grid-cols-4 gap-4 mb-8">
         <div className="bg-white p-4 rounded-lg shadow">
           <div className="text-sm text-gray-500">Branch</div>
           <div className="text-lg font-medium">{repo.default_branch}</div>
         </div>
         <div className="bg-white p-4 rounded-lg shadow">
-          <div className="text-sm text-gray-500">Confluence Space</div>
-          <div className="text-lg font-medium">{repo.confluence_space_key || "Not set"}</div>
+          <div className="text-sm text-gray-500">Destination</div>
+          <div className="text-lg font-medium">
+            <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+              repo.destination_platform === "notion"
+                ? "bg-gray-100 text-gray-800"
+                : "bg-blue-100 text-blue-800"
+            }`}>
+              {platformLabel}
+            </span>
+          </div>
+        </div>
+        <div className="bg-white p-4 rounded-lg shadow">
+          <div className="text-sm text-gray-500">
+            {repo.destination_platform === "confluence" ? "Space Key" : "Database ID"}
+          </div>
+          <div className="text-lg font-medium">{configSummary}</div>
         </div>
         <div className="bg-white p-4 rounded-lg shadow">
           <div className="text-sm text-gray-500">Page Mappings</div>
@@ -106,7 +130,7 @@ export default function RepoDetailPage() {
                   </span>
                 </td>
                 <td className="px-6 py-4 text-sm text-gray-500">
-                  {job.started_at ? new Date(job.started_at).toLocaleString() : "—"}
+                  {job.started_at ? new Date(job.started_at).toLocaleString() : "\u2014"}
                 </td>
               </tr>
             ))}
@@ -135,7 +159,7 @@ export default function RepoDetailPage() {
               <tr key={m.id} className="hover:bg-gray-50">
                 <td className="px-6 py-4 text-sm font-mono">{m.code_path}</td>
                 <td className="px-6 py-4 text-sm text-gray-500">{m.doc_type}</td>
-                <td className="px-6 py-4 text-sm text-gray-500">{m.confluence_page_id || "—"}</td>
+                <td className="px-6 py-4 text-sm text-gray-500">{m.destination_page_id || "\u2014"}</td>
                 <td className="px-6 py-4 text-sm text-gray-500">
                   {m.last_synced_at ? new Date(m.last_synced_at).toLocaleString() : "Never"}
                 </td>
