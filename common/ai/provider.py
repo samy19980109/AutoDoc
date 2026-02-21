@@ -47,7 +47,7 @@ class OpenAIProvider(AIProvider):
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
         response = await self.client.chat.completions.create(
-            model=self.model, messages=messages, max_tokens=max_tokens
+            model=self.model, messages=messages, max_completion_tokens=max_tokens
         )
         choice = response.choices[0]
         return AIResponse(
