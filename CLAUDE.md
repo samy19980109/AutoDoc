@@ -31,7 +31,7 @@ uvicorn services.github-webhook.main:app --port 8001 --reload
 uvicorn services.doc-sync.main:app --port 8002 --reload
 
 # Celery Workers
-celery -A services.doc_processor.celery_app worker --lollevel=info
+celery -A services.doc_processor.celery_app worker --loglevel=info
 
 # Celery Beat (scheduler)
 celery -A services.doc_processor.celery_app beat --loglevel=info
